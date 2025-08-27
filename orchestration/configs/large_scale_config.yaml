@@ -1,0 +1,151 @@
+# Large Scale Experiment Configuration
+# This configuration is for running extensive experiments with multiple model sizes
+
+experiment:
+  name: "qwen_scaling_study"
+  description: "Large scale study comparing different model sizes and training configurations"
+  output_base_dir: "/cluster/tufts/hugheslab/kheuto01/code/daft/orchestration/outputs"
+  
+# Step 1: Training Configuration
+training:
+  model_name: "Qwen/Qwen2.5-7B-Instruct"  # Larger model
+  train_dataset_name: "s1K_tokenized"
+  
+  # Training hyperparameters
+  learning_rate: 5e-6  # Lower LR for larger model
+  epochs: 3
+  batch_size: 32  # Larger batch size
+  weight_decay: 1e-4
+  
+  # Custom loss settings
+  use_custom_loss: true
+  loss_type: "topk_cross_entropy"
+  topk_k: 256  # Higher k for more sophisticated training
+  topk_temperature: 1.0
+  
+  # Weights & Biases settings
+  wandb_project: "Qwen2.5-7B-Instruct-s1-top256"
+  wandb_entity: "wandb_kheuton"
+  
+  # HuggingFace Hub settings
+  push_to_hub: true
+  hub_model_id: "kheuton/qwen_7B_s1_custom"
+  
+  # SLURM settings for large scale training
+  slurm:
+    job_name: "train_s1_7B"
+    nodes: 4  # Multiple nodes for large model
+    ntasks_per_node: 1
+    cpus_per_task: 16
+    gres: "gpu:4"
+    mem: "512G"  # More memory for larger model
+    time: "7-00:00:00"  # Week-long training
+    partition: "gpu"
+
+# Step 2: Model Upload Configuration
+upload:
+  create_model_card: true
+  model_card_template: |
+    ---
+    tags:
+    - text-generation
+    - qwen
+    - custom-loss
+    - s1-training
+    - 7b
+    license: apache-2.0
+    ---
+    
+    # Qwen 7B S1 Custom Model
+    
+    This model was trained using the S1 method with custom top-k cross-entropy loss.
+    This is part of a scaling study to understand test-time compute scaling.
+    
+    ## Training Details
+    - Base model: {model_name}
+    - Training method: S1 with top-k cross-entropy loss (k={topk_k})
+    - Learning rate: {learning_rate}
+    - Epochs: {epochs}
+    - Batch size: {batch_size}
+    - Model size: 7B parameters
+    
+    ## Performance
+    This model is designed for mathematical reasoning tasks and benefits from
+    test-time compute scaling techniques.
+    
+    ## Usage
+    ```python
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    
+    model = AutoModelForCausalLM.from_pretrained("{hub_model_id}")
+    tokenizer = AutoTokenizer.from_pretrained("{hub_model_id}")
+    ```
+
+# Step 3: Evaluation Configuration
+evaluation:
+  model_path: "kheuton/qwen_7B_s1_custom"
+  prm_path: "Qwen/Qwen2.5-Math-PRM-7B"
+  
+  # Dataset configuration
+  dataset_name: "eval/datasets/math500.jsonl"  # Path relative to code_base
+  
+  # Evaluation method
+  approach: "best_of_n"
+  n: 256  # Higher n for comprehensive evaluation
+  search_batch_size: 1
+  sort_completed: true
+  filter_duplicates: true
+  
+  # Full dataset
+  dataset_start: 0
+  dataset_end: 500
+  
+  seed: 96
+  
+  # HuggingFace Hub settings
+  push_results_to_hub: true
+  hub_dataset_id: "kheuton/qwen_7B_s1_bon_completions"
+  
+  # SLURM settings for comprehensive evaluation
+  slurm:
+    job_name: "eval_7B_comprehensive"
+    array: "1-20%8"  # Standard array
+    gres: "gpu:a100:4"
+    time: "24:00:00"  # Longer time for more completions
+    nodes: 1
+    cpus_per_task: 16
+    mem: "256G"
+    partition: "gpu"
+    constraint: "a100-80G"
+
+# Step 4: Results Processing Configuration
+processing:
+  outputs_base_dir: "/cluster/tufts/hugheslab/kheuto01/code/daft/orchestration/outputs"
+  compute_metrics: true
+  generate_plots: true
+  save_combined_dataset: true
+  combined_dataset_name: "{hub_dataset_id}_combined.json"
+
+# Global SLURM Configuration
+slurm_global:
+  account: ""
+  qos: ""
+  email: ""
+  
+# Environment Configuration
+environment:
+  training_env: "s1"
+  evaluation_env: "sal"
+  code_base: "/cluster/tufts/hugheslab/kheuto01/code/daft"
+  
+# Dependency Management
+dependencies:
+  workflow:
+    - step: "training"
+      depends_on: []
+    - step: "upload" 
+      depends_on: ["training"]
+    - step: "evaluation"
+      depends_on: ["upload"]
+    - step: "processing"
+      depends_on: ["evaluation"]

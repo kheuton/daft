@@ -1,0 +1,161 @@
+# Orchestration Configuration for DAFT Experiments
+# This file defines all parameters for the complete training -> evaluation pipeline
+
+experiment:
+  name: "qwen_1.5B_s1_experiment"
+  description: "End-to-end training and evaluation pipeline for Qwen 1.5B with S1 custom loss"
+  output_base_dir: "/cluster/tufts/hugheslab/kheuto01/code/daft/orchestration/outputs"
+  
+# Step 1: Training Configuration
+training:
+  # Model and dataset settings
+  model_name: "Qwen/Qwen2.5-1.5B-Instruct"
+  train_dataset_name: "s1K_tokenized"
+  
+  # Training hyperparameters
+  learning_rate: 1e-5
+  epochs: 5
+  batch_size: 16
+  weight_decay: 1e-4
+  
+  # Custom loss settings
+  use_custom_loss: true
+  loss_type: "topk_cross_entropy"
+  topk_k: 128
+  topk_temperature: 1.0
+  
+  # Weights & Biases settings
+  wandb_project: "Qwen2.5-1.5B-Instruct-s1-top128"
+  wandb_entity: "wandb_kheuton"
+  
+  # HuggingFace Hub settings
+  push_to_hub: true
+  hub_model_id: "kheuton/qwen_1.5B_s1_custom"  # Where to push the trained model
+  
+  # SLURM settings for training
+  slurm:
+    job_name: "train_s1"
+    nodes: 2
+    ntasks_per_node: 1
+    cpus_per_task: 16
+    gres: "gpu:4"
+    mem: "256G"
+    time: "3-00:00:00"
+    partition: "gpu"
+    nodelist: "cc1gpu[002,003]"  # Optional: specify nodes
+
+# Step 2: Model Upload Configuration
+upload:
+  # This step uploads the trained model to HuggingFace Hub
+  # The model path will be determined from the training step
+  create_model_card: true
+  model_card_template: |
+    ---
+    tags:
+    - text-generation
+    - qwen
+    - custom-loss
+    - s1-training
+    license: apache-2.0
+    ---
+    
+    # Qwen 1.5B S1 Custom Model
+    
+    This model was trained using the S1 method with custom top-k cross-entropy loss.
+    
+    ## Training Details
+    - Base model: {model_name}
+    - Training method: S1 with top-k cross-entropy loss (k={topk_k})
+    - Learning rate: {learning_rate}
+    - Epochs: {epochs}
+    - Batch size: {batch_size}
+    
+    ## Usage
+    ```python
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    
+    model = AutoModelForCausalLM.from_pretrained("{hub_model_id}")
+    tokenizer = AutoTokenizer.from_pretrained("{hub_model_id}")
+    ```
+
+# Step 3: Evaluation Configuration
+evaluation:
+  # Model to evaluate (will be set to the trained model)
+  model_path: "kheuton/qwen_1.5B_s1_custom"  # This will be updated after training
+  prm_path: "Qwen/Qwen2.5-Math-PRM-7B"
+  
+  # Dataset configuration
+  dataset_name: "eval/datasets/math500.jsonl"  # Path relative to code_base
+  
+  # Evaluation method
+  approach: "best_of_n"
+  n: 128
+  search_batch_size: 1
+  sort_completed: true
+  filter_duplicates: true
+  
+  # Dataset range
+  dataset_start: 0
+  dataset_end: 500
+  
+  # Other settings
+  seed: 96
+  
+  # HuggingFace Hub settings for results
+  push_results_to_hub: true
+  hub_dataset_id: "kheuton/qwen_1.5B_s1_bon_completions"  # Where to push evaluation results
+  
+  # SLURM settings for evaluation
+  slurm:
+    job_name: "eval_test_time_compute"
+    array: "1-20%8"  # 20 tasks, max 8 running concurrently
+    gres: "gpu:a100:4"
+    time: "16:00:00"
+    nodes: 1
+    cpus_per_task: 16
+    mem: "256G"
+    partition: "gpu"
+    constraint: "a100-80G"
+
+# Step 4: Results Processing Configuration
+processing:
+  # Merge evaluation chunks
+  outputs_base_dir: "/cluster/tufts/hugheslab/kheuto01/code/daft/orchestration/outputs"
+  
+  # Analysis settings
+  compute_metrics: true
+  generate_plots: true
+  
+  # Results storage
+  save_combined_dataset: true
+  combined_dataset_name: "{hub_dataset_id}_combined.json"
+
+# Global SLURM Configuration
+slurm_global:
+  # Common settings for all jobs
+  account: ""  # Add your SLURM account if needed
+  qos: ""      # Add your QOS if needed
+  email: ""    # Add email for notifications if desired
+  
+# Environment Configuration
+environment:
+  # Conda environments
+  training_env: "s1"
+  evaluation_env: "sal"
+  
+  # Paths
+  code_base: "/cluster/tufts/hugheslab/kheuto01/code/daft"
+  
+# Dependency Management
+dependencies:
+  # Define which steps depend on which
+  # training -> upload -> evaluation -> processing
+  workflow:
+    - step: "training"
+      depends_on: []
+    - step: "upload" 
+      depends_on: ["training"]
+    - step: "evaluation"
+      depends_on: ["upload"]
+    - step: "processing"
+      depends_on: ["evaluation"]

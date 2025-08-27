@@ -1,0 +1,138 @@
+# Quick Experiment Configuration for Testing
+# This is a smaller scale experiment for testing the pipeline
+
+experiment:
+  name: "qwen_1.5B_s1_test"
+  description: "Quick test run of the training and evaluation pipeline"
+  output_base_dir: "/cluster/tufts/hugheslab/kheuto01/code/daft/orchestration/outputs"
+  
+# Step 1: Training Configuration (smaller scale)
+training:
+  model_name: "Qwen/Qwen2.5-1.5B-Instruct"
+  train_dataset_name: "s1K_tokenized"
+  
+  # Reduced training parameters for testing
+  learning_rate: 1e-5
+  epochs: 1  # Just 1 epoch for testing
+  batch_size: 8  # Smaller batch size
+  weight_decay: 1e-4
+  
+  # Custom loss settings
+  use_custom_loss: true
+  loss_type: "topk_cross_entropy"
+  topk_k: 32  # Reduced k for testing
+  topk_temperature: 1.0
+  
+  # Weights & Biases settings
+  wandb_project: "Qwen2.5-1.5B-Instruct-s1-test"
+  wandb_entity: "wandb_kheuton"
+  
+  # HuggingFace Hub settings
+  push_to_hub: true
+  hub_model_id: "kheuton/qwen_1.5B_s1_test"
+  
+  # SLURM settings for training (reduced resources)
+  slurm:
+    job_name: "train_s1_test"
+    nodes: 1  # Single node for testing
+    ntasks_per_node: 1
+    cpus_per_task: 16
+    gres: "gpu:2"  # Fewer GPUs
+    mem: "128G"  # Less memory
+    time: "1:00:00"  # Just 1 hour
+    partition: "gpu"
+
+# Step 2: Model Upload Configuration
+upload:
+  create_model_card: true
+  model_card_template: |
+    ---
+    tags:
+    - text-generation
+    - qwen
+    - custom-loss
+    - s1-training
+    - test
+    license: apache-2.0
+    ---
+    
+    # Qwen 1.5B S1 Test Model
+    
+    This is a test model trained using the S1 method with custom top-k cross-entropy loss.
+    **This is for testing purposes only.**
+    
+    ## Training Details
+    - Base model: {model_name}
+    - Training method: S1 with top-k cross-entropy loss (k={topk_k})
+    - Learning rate: {learning_rate}
+    - Epochs: {epochs} (test run)
+    - Batch size: {batch_size}
+
+# Step 3: Evaluation Configuration (reduced scale)
+evaluation:
+  model_path: "kheuton/qwen_1.5B_s1_test"
+  prm_path: "Qwen/Qwen2.5-Math-PRM-7B"
+  
+  # Dataset configuration
+  dataset_name: "eval/datasets/math500.jsonl"  # Path relative to code_base
+  
+  # Evaluation method
+  approach: "best_of_n"
+  n: 32  # Reduced n for testing
+  search_batch_size: 1
+  sort_completed: true
+  filter_duplicates: true
+  
+  # Smaller dataset range for testing
+  dataset_start: 0
+  dataset_end: 100  # Just 100 samples instead of 500
+  
+  seed: 96
+  
+  # HuggingFace Hub settings
+  push_results_to_hub: true
+  hub_dataset_id: "kheuton/qwen_1.5B_s1_test_completions"
+  
+  # SLURM settings (reduced scale)
+  slurm:
+    job_name: "eval_test"
+    array: "1-4%2"  # 4 tasks, max 2 running (for 100 samples)
+    gres: "gpu:a100:2"  # Fewer GPUs
+    time: "4:00:00"  # Shorter time
+    nodes: 1
+    cpus_per_task: 8
+    mem: "128G"
+    partition: "gpu"
+    constraint: "a100-80G"
+
+# Step 4: Results Processing Configuration
+processing:
+  outputs_base_dir: "/cluster/tufts/hugheslab/kheuto01/code/daft/orchestration/outputs"
+  compute_metrics: true
+  generate_plots: true
+  save_combined_dataset: true
+  combined_dataset_name: "{hub_dataset_id}_combined.json"
+
+# Global SLURM Configuration
+slurm_global:
+  account: ""
+  qos: ""
+  email: ""
+  
+# Environment Configuration
+environment:
+  training_env: "s1"
+  evaluation_env: "sal"
+  code_base: "/cluster/tufts/hugheslab/kheuto01/code/daft"
+  
+# Dependency Management
+dependencies:
+  workflow:
+    - step: "training"
+      depends_on: []
+    - step: "upload" 
+      depends_on: ["training"]
+    - step: "evaluation"
+      depends_on: ["upload"]
+    - step: "processing"
+      depends_on: ["evaluation"]
