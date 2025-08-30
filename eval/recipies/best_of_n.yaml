@@ -10,3 +10,9 @@ dataset_end: 500
 seed: 96
 prm_path: "Qwen/Qwen2.5-Math-PRM-7B"
 model_path: "kheuton/qwen_1.5B_s1_custom"
+
+# VLLM sampling parameters to match training behavior
+# These should match the training parameters for consistency
+temperature: 1.0
+top_k: -1  # Match training topk_k parameter
+top_p: 1  # Enable nucleus sampling for better diversity

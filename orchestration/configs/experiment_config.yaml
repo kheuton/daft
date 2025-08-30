@@ -98,6 +98,13 @@ evaluation:
   dataset_start: 0
   dataset_end: 500
   
+  # VLLM sampling parameters to match training behavior
+  # These should match the training topk_k and other parameters for consistency
+  temperature: 1.0
+  top_k: 128  # Match training topk_k parameter
+  top_p: 1  # Enable nucleus sampling for better diversity
+
+  
   # Other settings
   seed: 96
   

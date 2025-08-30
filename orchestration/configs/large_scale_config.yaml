@@ -102,6 +102,11 @@ evaluation:
   
   seed: 96
   
+  # Sampling parameters for evaluation (matching training behavior)
+  temperature: 1.0
+  top_k: 256  # Match training topk_k
+  top_p: 1.0
+
   # HuggingFace Hub settings
   push_results_to_hub: true
   hub_dataset_id: "kheuton/qwen_7B_s1_bon_completions"

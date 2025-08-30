@@ -13,11 +13,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class CustomPredictionWrapper(nn.Module):
+class SimplePredictionWrapper(nn.Module):
     """
-    Wrapper around a pretrained model that modifies prediction behavior.
-    This allows you to customize how the model computes next token probabilities
-    without modifying the underlying pretrained weights.
+    Simplified wrapper around a pretrained model that only implements top_k and top_p filtering.
+    This is mainly kept for backward compatibility, but the preferred approach is to use
+    custom loss during training and set sampling parameters in VLLM for evaluation.
     """
     
     def __init__(self, base_model, prediction_config=None):
@@ -46,18 +46,9 @@ class CustomPredictionWrapper(nn.Module):
     
     def _modify_logits(self, logits):
         """
-        Modify the logits before they're converted to probabilities.
-        Override this method or configure via prediction_config to implement
-        different prediction strategies.
+        Apply only top-k and top-p filtering to logits.
         """
-        # Example modifications (you can customize these):
-        
-        # 1. Temperature scaling
-        if 'temperature' in self.prediction_config:
-            temperature = self.prediction_config['temperature']
-            logits = logits / temperature
-            
-        # 2. Top-k filtering (set non-top-k logits to very negative values)
+        # Top-k filtering (set non-top-k logits to very negative values)
         if 'top_k' in self.prediction_config:
             k = self.prediction_config['top_k']
             if k > 0 and k < logits.size(-1):
@@ -69,7 +60,7 @@ class CustomPredictionWrapper(nn.Module):
                 # Set non-top-k logits to very negative values
                 logits = logits.masked_fill(~topk_mask, -1e9)
                 
-        # 3. Top-p (nucleus) filtering
+        # Top-p (nucleus) filtering
         if 'top_p' in self.prediction_config:
             top_p = self.prediction_config['top_p']
             if 0 < top_p < 1:
@@ -86,26 +77,6 @@ class CustomPredictionWrapper(nn.Module):
                 indices_to_remove = torch.zeros_like(logits, dtype=torch.bool)
                 indices_to_remove.scatter_(-1, sorted_indices, sorted_indices_to_remove)
                 logits = logits.masked_fill(indices_to_remove, -1e9)
-                
-        # 4. Repetition penalty (penalize recently generated tokens)
-        if 'repetition_penalty' in self.prediction_config and 'input_ids' in self.prediction_config:
-            penalty = self.prediction_config['repetition_penalty']
-            input_ids = self.prediction_config['input_ids']
-            if penalty != 1.0:
-                # Apply repetition penalty to tokens that appear in input
-                for batch_idx in range(logits.size(0)):
-                    for token_id in input_ids[batch_idx].unique():
-                        if token_id >= 0:  # Valid token
-                            if logits[batch_idx, -1, token_id] < 0:
-                                logits[batch_idx, -1, token_id] *= penalty
-                            else:
-                                logits[batch_idx, -1, token_id] /= penalty
-                                
-        # 5. Custom probability redistribution
-        if 'probability_redistribution' in self.prediction_config:
-            redistribution_fn = self.prediction_config['probability_redistribution']
-            if callable(redistribution_fn):
-                logits = redistribution_fn(logits)
                 
         return logits
     
@@ -129,31 +100,23 @@ class TrainingConfig:
     wandb_entity: Optional[str] = field(default="wandb_kheuton")
     train_file_path: Optional[str] = field(default='simplescaling/s1K_tokenized')
     dagger: bool = field(default=False)
-    # Add custom loss configuration
+    
+    # Custom loss configuration
     use_custom_loss: bool = field(default=False)
     loss_type: str = field(default="cross_entropy")  # Options: "cross_entropy", "focal", "label_smoothing", "topk_cross_entropy", etc.
     focal_alpha: float = field(default=1.0)
     focal_gamma: float = field(default=2.0)
     label_smoothing: float = field(default=0.1)
-    # Top-k parameters
+    
+    # Top-k parameters for custom loss
     topk_k: int = field(default=50)  # Number of top predictions to keep
     topk_temperature: float = field(default=1.0)  # Temperature for softmax before top-k filtering
     
-    # Custom prediction behavior configuration
-    use_custom_prediction: bool = field(default=False)
-    prediction_wrapper_type: str = field(default="basic")  # Options: "basic", "advanced", "contrastive"
-    prediction_temperature: float = field(default=1.0)  # Temperature scaling for predictions
+    # Simplified prediction behavior configuration (legacy support)
+    # Note: Prefer using custom loss instead of prediction wrappers
+    use_simple_prediction_wrapper: bool = field(default=False)
     prediction_top_k: int = field(default=0)  # Top-k filtering (0 = disabled)
-    prediction_top_p: float = field(default=1.0)  # Top-p filtering (1.0 = disabled) 
-    prediction_repetition_penalty: float = field(default=1.0)  # Repetition penalty (1.0 = disabled)
-    
-    # Advanced prediction options
-    use_learnable_bias: bool = field(default=False)  # Add learnable bias to token predictions
-    use_attention_reweighting: bool = field(default=False)  # Context-dependent reweighting
-    
-    # Contrastive prediction options (provide as JSON strings or configure programmatically)
-    boost_token_ids: Optional[str] = field(default=None)  # JSON list of token IDs to boost
-    suppress_token_ids: Optional[str] = field(default=None)  # JSON list of token IDs to suppress
+    prediction_top_p: float = field(default=1.0)  # Top-p filtering (1.0 = disabled)
 
     def __post_init__(self):
         os.environ['WANDB_PROJECT'] = self.wandb_project
@@ -340,132 +303,7 @@ class CustomSFTTrainer(trl.SFTTrainer):
             return F.cross_entropy(logits, labels)
 
 
-class AdvancedPredictionWrapper(CustomPredictionWrapper):
-    """
-    Advanced wrapper with more sophisticated prediction modification techniques.
-    """
-    
-    def __init__(self, base_model, prediction_config=None):
-        super().__init__(base_model, prediction_config)
-        
-        # Initialize learnable parameters if needed
-        if prediction_config and 'learnable_bias' in prediction_config:
-            vocab_size = base_model.config.vocab_size
-            self.prediction_bias = nn.Parameter(torch.zeros(vocab_size))
-        else:
-            self.prediction_bias = None
-            
-        if prediction_config and 'attention_weights' in prediction_config:
-            # Add a small MLP to reweight attention to different tokens
-            hidden_size = base_model.config.hidden_size
-            self.attention_reweighter = nn.Sequential(
-                nn.Linear(hidden_size, hidden_size // 4),
-                nn.ReLU(),
-                nn.Linear(hidden_size // 4, base_model.config.vocab_size)
-            )
-        else:
-            self.attention_reweighter = None
-    
-    def _modify_logits(self, logits):
-        """Advanced logit modifications"""
-        
-        # Apply base modifications first
-        logits = super()._modify_logits(logits)
-        
-        # 1. Add learnable bias to specific tokens
-        if self.prediction_bias is not None:
-            logits = logits + self.prediction_bias.unsqueeze(0).unsqueeze(0)
-            
-        # 2. Apply context-dependent reweighting
-        if self.attention_reweighter is not None and hasattr(self, '_last_hidden_state'):
-            # Use the last hidden state to compute context-dependent weights
-            context_weights = self.attention_reweighter(self._last_hidden_state[:, -1:, :])
-            logits = logits + context_weights
-            
-        # 3. Apply frequency-based penalties
-        if 'frequency_penalty' in self.prediction_config:
-            penalty_strength = self.prediction_config['frequency_penalty']
-            # This would require maintaining token frequency statistics
-            # Implementation depends on your specific needs
-            
-        # 4. Apply semantic constraints
-        if 'semantic_constraints' in self.prediction_config:
-            constraints = self.prediction_config['semantic_constraints']
-            # Example: boost probability of certain semantic categories
-            if 'boost_tokens' in constraints:
-                boost_tokens = constraints['boost_tokens']
-                boost_factor = constraints.get('boost_factor', 1.5)
-                for token_id in boost_tokens:
-                    if token_id < logits.size(-1):
-                        logits[..., token_id] *= boost_factor
-                        
-            # Example: suppress probability of certain token types  
-            if 'suppress_tokens' in constraints:
-                suppress_tokens = constraints['suppress_tokens']
-                suppress_factor = constraints.get('suppress_factor', 0.5)
-                for token_id in suppress_tokens:
-                    if token_id < logits.size(-1):
-                        logits[..., token_id] *= suppress_factor
-        
-        return logits
-    
-    def forward(self, *args, **kwargs):
-        # Store hidden states for context-dependent modifications
-        outputs = self.base_model(*args, **kwargs)
-        
-        if hasattr(outputs, 'hidden_states') and outputs.hidden_states is not None:
-            self._last_hidden_state = outputs.hidden_states[-1]  # Last layer
-        elif hasattr(outputs, 'last_hidden_state'):
-            self._last_hidden_state = outputs.last_hidden_state
-            
-        # Apply logit modifications
-        if hasattr(outputs, 'logits') and outputs.logits is not None:
-            modified_logits = self._modify_logits(outputs.logits)
-            if hasattr(outputs, '_replace'):
-                outputs = outputs._replace(logits=modified_logits)
-            else:
-                outputs.logits = modified_logits
-                
-        return outputs
 
-
-class ContrastivePredictionWrapper(CustomPredictionWrapper):
-    """
-    Wrapper that modifies predictions using contrastive learning principles.
-    This can help the model avoid generating certain types of content or 
-    push it towards generating more desirable content.
-    """
-    
-    def __init__(self, base_model, prediction_config=None):
-        super().__init__(base_model, prediction_config)
-        
-    def _modify_logits(self, logits):
-        """Apply contrastive modifications to logits"""
-        
-        # Apply base modifications
-        logits = super()._modify_logits(logits)
-        
-        # Contrastive prediction: modify based on what we want to avoid/prefer
-        if 'contrastive_targets' in self.prediction_config:
-            targets = self.prediction_config['contrastive_targets']
-            
-            # Increase probability of positive targets
-            if 'positive_tokens' in targets:
-                positive_tokens = targets['positive_tokens']
-                boost_factor = targets.get('positive_boost', 1.2)
-                for token_id in positive_tokens:
-                    if token_id < logits.size(-1):
-                        logits[..., token_id] = logits[..., token_id] + torch.log(torch.tensor(boost_factor))
-            
-            # Decrease probability of negative targets  
-            if 'negative_tokens' in targets:
-                negative_tokens = targets['negative_tokens']
-                suppress_factor = targets.get('negative_suppress', 0.8)
-                for token_id in negative_tokens:
-                    if token_id < logits.size(-1):
-                        logits[..., token_id] = logits[..., token_id] + torch.log(torch.tensor(suppress_factor))
-        
-        return logits
 
 
 def train():
@@ -493,58 +331,22 @@ def train():
     else:
         base_model = transformers.AutoModelForCausalLM.from_pretrained(config.model_name)
     
-    # Wrap model with custom prediction behavior if enabled
-    if config.use_custom_prediction:
-        import json
-        prediction_config = {
-            'temperature': config.prediction_temperature,
-            'top_k': config.prediction_top_k if config.prediction_top_k > 0 else None,
-            'top_p': config.prediction_top_p if config.prediction_top_p < 1.0 else None,
-            'repetition_penalty': config.prediction_repetition_penalty if config.prediction_repetition_penalty != 1.0 else None,
-        }
+    # Optionally wrap model with simple prediction behavior (legacy support)
+    # Note: The preferred approach is to use custom loss during training and 
+    # set sampling parameters in VLLM during evaluation
+    if config.use_simple_prediction_wrapper:
+        prediction_config = {}
+        if config.prediction_top_k > 0:
+            prediction_config['top_k'] = config.prediction_top_k
+        if config.prediction_top_p < 1.0:
+            prediction_config['top_p'] = config.prediction_top_p
         
-        # Add advanced options
-        if config.prediction_wrapper_type == "advanced":
-            if config.use_learnable_bias:
-                prediction_config['learnable_bias'] = True
-            if config.use_attention_reweighting:
-                prediction_config['attention_weights'] = True
-                
-        # Add contrastive options
-        elif config.prediction_wrapper_type == "contrastive":
-            contrastive_targets = {}
-            if config.boost_token_ids:
-                try:
-                    boost_tokens = json.loads(config.boost_token_ids)
-                    contrastive_targets['positive_tokens'] = boost_tokens
-                    contrastive_targets['positive_boost'] = 1.2  # Default boost factor
-                except json.JSONDecodeError:
-                    logging.warning("Invalid JSON for boost_token_ids, ignoring")
-                    
-            if config.suppress_token_ids:
-                try:
-                    suppress_tokens = json.loads(config.suppress_token_ids)
-                    contrastive_targets['negative_tokens'] = suppress_tokens  
-                    contrastive_targets['negative_suppress'] = 0.8  # Default suppress factor
-                except json.JSONDecodeError:
-                    logging.warning("Invalid JSON for suppress_token_ids, ignoring")
-                    
-            if contrastive_targets:
-                prediction_config['contrastive_targets'] = contrastive_targets
-        
-        # Remove None values
-        prediction_config = {k: v for k, v in prediction_config.items() if v is not None}
-        
-        # Choose appropriate wrapper
-        if config.prediction_wrapper_type == "advanced":
-            model = AdvancedPredictionWrapper(base_model, prediction_config)
-            logging.info(f"Using advanced prediction wrapper with config: {prediction_config}")
-        elif config.prediction_wrapper_type == "contrastive":
-            model = ContrastivePredictionWrapper(base_model, prediction_config)
-            logging.info(f"Using contrastive prediction wrapper with config: {prediction_config}")
-        else:  # basic
-            model = CustomPredictionWrapper(base_model, prediction_config)
-            logging.info(f"Using basic prediction wrapper with config: {prediction_config}")
+        if prediction_config:
+            model = SimplePredictionWrapper(base_model, prediction_config)
+            logging.info(f"Using simple prediction wrapper with config: {prediction_config}")
+        else:
+            model = base_model
+            logging.info("Simple prediction wrapper enabled but no parameters set, using base model")
     else:
         model = base_model
 

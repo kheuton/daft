@@ -323,7 +323,11 @@ echo "Upload completed for experiment {self.experiment_id}"
             'seed': config['seed'],
             'prm_path': config['prm_path'],
             'model_path': model_path,
-            'dataset_name': config.get('dataset_name', 'eval/datasets/math500.jsonl')  # Use config value or default
+            'dataset_name': config.get('dataset_name', 'eval/datasets/math500.jsonl'),  # Use config value or default
+            # VLLM sampling parameters to match training behavior
+            'temperature': config.get('temperature', 1.0),
+            'top_k': config.get('top_k', -1),  # -1 means disabled
+            'top_p': config.get('top_p', 1.0),  # 1.0 means disabled  
         }
         
         eval_config_path = self.scripts_dir / f"eval_config_{self.experiment_id}.yaml"
