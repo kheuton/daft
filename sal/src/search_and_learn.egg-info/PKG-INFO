@@ -1,0 +1,58 @@
+Metadata-Version: 2.4
+Name: search-and-learn
+Version: 0.1.0
+Summary: A tool for search-based methods on llms
+Home-page: https://github.com/reliable-agents/search-and-learn
+Author: The Hugging Face team (past and future)
+Author-email: lewis@huggingface.co
+License: Apache
+Keywords: nlp deep learning mcts
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Education
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.10.9
+Description-Content-Type: text/markdown
+Requires-Dist: accelerate
+Requires-Dist: pebble
+Requires-Dist: latex2sympy2==1.9.1
+Requires-Dist: word2number
+Requires-Dist: transformers>=4.47.0
+Requires-Dist: fastapi
+Provides-Extra: quality
+Requires-Dist: ruff; extra == "quality"
+Requires-Dist: isort; extra == "quality"
+Provides-Extra: tests
+Requires-Dist: pytest; extra == "tests"
+Provides-Extra: dev
+Requires-Dist: vllm==0.6.3; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: isort; extra == "dev"
+Requires-Dist: pytest; extra == "dev"
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: license
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+# A Probabilistic Inference Approach to Inference-Time Scaling of LLMs using Particle-Based Monte Carlo Methods
+
+## Isha Puri, Shiv Sudalairaj, GX Xu, Kai Xu, Akash Srivastava
+
+For more information, check out our website at <https://probabilistic-inference-scaling.github.io/>!
+
+In the code above, the script to run our method is `script_to_run.sh`.
+
+![Process Function Diagram](images/process_fun_diagram.jpg)
