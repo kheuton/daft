@@ -8,6 +8,8 @@ This script orchestrates the complete pipeline:
 Usage:
     python orchestrate_experiment.py configs/experiment_config.yaml
     python orchestrate_experiment.py configs/experiment_config.yaml --step training  # Run only training
+    python orchestrate_experiment.py configs/experiment_config.yaml --step processing --experiment-id qwen_1.5b_s1_experiment_no_80_20250831_001131  # Re-run processing with existing experiment ID
+    python orchestrate_experiment.py --list-experiments  # List available experiment IDs
     python orchestrate_experiment.py configs/experiment_config.yaml --dry-run       # Show what would be submitted
 """
 
@@ -23,11 +25,11 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 class ExperimentOrchestrator:
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, experiment_id: Optional[str] = None):
         """Initialize the orchestrator with configuration."""
         self.config_path = config_path
         self.config = self.load_config(config_path)
-        self.experiment_id = self.generate_experiment_id()
+        self.experiment_id = experiment_id or self.generate_experiment_id()
         self.job_ids = {}  # Store job IDs for dependency management
         self.scripts_dir = Path(__file__).parent / "scripts"
         self.logs_dir = Path(__file__).parent / "logs" / self.experiment_id
@@ -36,6 +38,11 @@ class ExperimentOrchestrator:
         print(f"🚀 Initializing experiment: {self.config['experiment']['name']}")
         print(f"📊 Experiment ID: {self.experiment_id}")
         print(f"📁 Logs directory: {self.logs_dir}")
+        
+        if experiment_id:
+            print(f"🔄 Using provided experiment ID (likely for re-running a step)")
+            # Validate that the experiment exists for certain steps
+            self._validate_existing_experiment()
     
     def load_config(self, config_path: str) -> Dict:
         """Load the experiment configuration."""
@@ -410,6 +417,7 @@ echo "Evaluation task $SLURM_ARRAY_TASK_ID completed for experiment {self.experi
         evaluation_config = self.config['evaluation']
         
         context = {
+            'dataset_name': evaluation_config['dataset_name'],
             'experiment_id': self.experiment_id,
             'outputs_base_dir': f"{self.config['experiment']['output_base_dir']}/{self.experiment_id}/eval_outputs",
             'hub_dataset_id': evaluation_config['hub_dataset_id'],
@@ -457,10 +465,6 @@ from collections import defaultdict
 import matplotlib.pyplot as plt
 
 print('Starting results processing...')
-
-# Load experiment configuration
-with open('{self.config_path}', 'r') as f:
-    experiment_config = yaml.safe_load(f)
 
 # Set up paths
 outputs_base_dir = '{context['outputs_base_dir']}'
@@ -513,7 +517,7 @@ if all_datasets:
     print('Computing evaluation metrics...')
     
     # Load ground truth
-    config = Config()
+    config = Config(dataset_name='{context['dataset_name']}')
     gt = get_dataset(config)
     gt_dict = {{item['unique_id']: item for item in gt}}
     data_dict = {{item['unique_id']: item for item in combined_dataset}}
@@ -662,6 +666,24 @@ echo "Results processing completed for experiment {self.experiment_id}"
         os.chmod(script_path, 0o755)
         return str(script_path)
     
+    def _validate_existing_experiment(self):
+        """Validate that the existing experiment has necessary files and directories."""
+        # Check if checkpoint directory exists (needed for upload, evaluation, processing)
+        ckpt_dir = Path(f"ckpts/{self.experiment_id}")
+        if not ckpt_dir.exists():
+            print(f"⚠️  Warning: Checkpoint directory not found: {ckpt_dir}")
+            print(f"   This is expected if you're only running training for this experiment ID")
+        
+        # Check if outputs directory exists (needed for processing)
+        outputs_dir = Path(f"{self.config['experiment']['output_base_dir']}/{self.experiment_id}/eval_outputs")
+        if not outputs_dir.exists():
+            print(f"⚠️  Warning: Evaluation outputs directory not found: {outputs_dir}")
+            print(f"   This is expected if you haven't run evaluation yet for this experiment ID")
+        else:
+            # Count output subdirectories
+            subdirs = [d for d in outputs_dir.iterdir() if d.is_dir()]
+            print(f"📂 Found {len(subdirs)} evaluation output directories")
+    
     def submit_job(self, script_path: str, dependencies: List[str] = None) -> str:
         """Submit a SLURM job and return the job ID."""
         cmd = ["sbatch"]
@@ -733,22 +755,55 @@ echo "Results processing completed for experiment {self.experiment_id}"
             print(f"   squeue -u $USER")
             print(f"📁 Check logs in: {self.logs_dir}")
             print(f"📈 Results will be saved to: {self.config['experiment']['output_base_dir']}/{self.experiment_id}")
+    
+    @staticmethod
+    def list_available_experiments():
+        """List available experiment IDs from checkpoints directory."""
+        ckpts_dir = Path("ckpts")
+        if not ckpts_dir.exists():
+            print("❌ No checkpoints directory found")
+            return []
+        
+        experiment_dirs = [d.name for d in ckpts_dir.iterdir() if d.is_dir()]
+        experiment_dirs.sort()
+        
+        if experiment_dirs:
+            print("\n📂 Available experiment IDs:")
+            for exp_id in experiment_dirs:
+                print(f"   {exp_id}")
+        else:
+            print("❌ No experiment directories found in ckpts/")
+        
+        return experiment_dirs
 
 def main():
     parser = argparse.ArgumentParser(description="Orchestrate DAFT experiments")
-    parser.add_argument("config", help="Path to experiment configuration file")
+    parser.add_argument("config", nargs='?', help="Path to experiment configuration file")
     parser.add_argument("--step", choices=["training", "upload", "evaluation", "processing"],
                        help="Run only a specific step")
+    parser.add_argument("--experiment-id", type=str,
+                       help="Use a specific experiment ID (useful for re-running steps of existing experiments)")
+    parser.add_argument("--list-experiments", action="store_true",
+                       help="List available experiment IDs and exit")
     parser.add_argument("--dry-run", action="store_true", 
                        help="Show what would be submitted without actually submitting")
     
     args = parser.parse_args()
     
+    if args.list_experiments:
+        ExperimentOrchestrator.list_available_experiments()
+        return
+    
+    if not args.config:
+        print("❌ Configuration file is required unless using --list-experiments")
+        parser.print_help()
+        sys.exit(1)
+    
     if not os.path.exists(args.config):
         print(f"❌ Configuration file not found: {args.config}")
         sys.exit(1)
     
-    orchestrator = ExperimentOrchestrator(args.config)
+    orchestrator = ExperimentOrchestrator(args.config, args.experiment_id)
     
     try:
         if args.step:
