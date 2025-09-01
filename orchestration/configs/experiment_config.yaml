@@ -2,7 +2,7 @@
 # This file defines all parameters for the complete training -> evaluation pipeline
 
 experiment:
-  name: "qwen_1.5B_s1_experiment"
+  name: "qwen_1.5B_s1_experiment_first_run"
   description: "End-to-end training and evaluation pipeline for Qwen 1.5B with S1 custom loss"
   output_base_dir: "/cluster/tufts/hugheslab/kheuto01/code/daft/orchestration/outputs"
   
@@ -30,19 +30,19 @@ training:
   
   # HuggingFace Hub settings
   push_to_hub: true
-  hub_model_id: "kheuton/qwen_1.5B_s1_custom"  # Where to push the trained model
+  hub_model_id: "kheuton/qwen_1.5B_s1_custom_inf_time"  # Where to push the trained model
   
   # SLURM settings for training
   slurm:
     job_name: "train_s1"
-    nodes: 2
+    nodes: 1
     ntasks_per_node: 1
     cpus_per_task: 16
     gres: "gpu:4"
     mem: "256G"
     time: "3-00:00:00"
     partition: "gpu"
-    nodelist: "cc1gpu[002,003]"  # Optional: specify nodes
+    #nodelist: "cc1gpu[002,003]"  # Optional: specify nodes
 
 # Step 2: Model Upload Configuration
 upload:
@@ -81,7 +81,7 @@ upload:
 # Step 3: Evaluation Configuration
 evaluation:
   # Model to evaluate (will be set to the trained model)
-  model_path: "kheuton/qwen_1.5B_s1_custom"  # This will be updated after training
+  model_path: "kheuton/qwen_1.5B_s1_custom_inf_time"  # This will be updated after training
   prm_path: "Qwen/Qwen2.5-Math-PRM-7B"
   
   # Dataset configuration
@@ -110,12 +110,12 @@ evaluation:
   
   # HuggingFace Hub settings for results
   push_results_to_hub: true
-  hub_dataset_id: "kheuton/qwen_1.5B_s1_bon_completions"  # Where to push evaluation results
+  hub_dataset_id: "kheuton/qwen_1.5B_s1_bon_completions_topk_at_eval"  # Where to push evaluation results
   
   # SLURM settings for evaluation
   slurm:
     job_name: "eval_test_time_compute"
-    array: "1-20%8"  # 20 tasks, max 8 running concurrently
+    array: "1-2%2"  # 20 tasks, max 8 running concurrently
     gres: "gpu:a100:4"
     time: "16:00:00"
     nodes: 1

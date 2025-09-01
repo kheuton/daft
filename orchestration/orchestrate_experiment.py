@@ -79,6 +79,9 @@ class ExperimentOrchestrator:
             'training_env': self.config['environment']['training_env']
         }
         
+        # Prepare training config for embedding in JSON with escaped quotes
+        training_config_escaped = yaml.dump(config, default_flow_style=False).replace('"', '\\"')
+        
         script_content = f"""#!/bin/bash
 #SBATCH --job-name={slurm_config['job_name']}_{self.experiment_id}
 #SBATCH --nodes={slurm_config['nodes']}
@@ -178,7 +181,7 @@ cat > ckpts/{self.experiment_id}/experiment_metadata.json << EOF
 {{
     "experiment_id": "{self.experiment_id}",
     "config_path": "{self.config_path}",
-    "training_config": {yaml.dump(config, default_flow_style=False).replace('"', '\\"')},
+    "training_config": {training_config_escaped},
     "completed_at": "$(date)",
     "slurm_job_id": "$SLURM_JOB_ID"
 }}
@@ -222,7 +225,7 @@ echo "Experiment metadata saved to ckpts/{self.experiment_id}/experiment_metadat
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=2:00:00
-#SBATCH --partition=cpu
+#SBATCH --partition=batch
 #SBATCH --output={self.logs_dir}/upload_%j.out
 #SBATCH --error={self.logs_dir}/upload_%j.err
 
@@ -325,7 +328,7 @@ echo "Upload completed for experiment {self.experiment_id}"
             'model_path': model_path,
             'dataset_name': config.get('dataset_name', 'eval/datasets/math500.jsonl'),  # Use config value or default
             # VLLM sampling parameters to match training behavior
-            'temperature': config.get('temperature', 1.0),
+            'temperature': config.get('temperature', 0.8),
             'top_k': config.get('top_k', -1),  # -1 means disabled
             'top_p': config.get('top_p', 1.0),  # 1.0 means disabled  
         }
@@ -347,6 +350,9 @@ echo "Upload completed for experiment {self.experiment_id}"
 #SBATCH --partition={slurm_config['partition']}
 """
         
+        if 'nodelist' in slurm_config and slurm_config['nodelist']:
+            script_content += f"#SBATCH --nodelist={slurm_config['nodelist']}\n"
+        
         if 'constraint' in slurm_config and slurm_config['constraint']:
             script_content += f"#SBATCH --constraint=\"{slurm_config['constraint']}\"\n"
         
@@ -357,7 +363,7 @@ mamba activate {context['evaluation_env']}
 cd {context['code_base']}
 
 # Define evaluation parameters
-STEP=25
+STEP=250
 ENDPOINT=$((SLURM_ARRAY_TASK_COUNT * STEP - STEP))
 STARTS=($(seq 0 $STEP $ENDPOINT))
 
@@ -418,7 +424,7 @@ echo "Evaluation task $SLURM_ARRAY_TASK_ID completed for experiment {self.experi
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=2:00:00
-#SBATCH --partition=cpu
+#SBATCH --partition=batch
 #SBATCH --output={self.logs_dir}/processing_%j.out
 #SBATCH --error={self.logs_dir}/processing_%j.err
 

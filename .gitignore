@@ -2,3 +2,7 @@
 __pycache__/
 *.err
 *.out
+ckpts/
+orchestration/outputs/
+orchestration/scripts/
+wandb/

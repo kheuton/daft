@@ -58,19 +58,9 @@ def main():
     )
     prm = load_prm(config)
     
-    # Create sampling parameters to match training behavior
-    # Get sampling parameters from config with defaults that match training
-    sampling_params = SamplingParams(
-        temperature=getattr(config, 'temperature', 1.0),
-        top_k=getattr(config, 'top_k', -1),  # -1 means disabled
-        top_p=getattr(config, 'top_p', 1.0),  # 1.0 means disabled
-        seed=config.seed if hasattr(config, 'seed') else None,
-    )
     
     print("==="*20)
     print("config:", config)
-    print("==="*20)
-    print("sampling_params:", sampling_params)
     print("==="*20)
     print("approach_fn:", approach_fn)
     print("==="*20)
@@ -93,7 +83,7 @@ def main():
             approach_fn,
             batched=True,
             batch_size=1,
-            fn_kwargs={"config": config, "llm": llm, "prm": prm, "sampling_params": sampling_params},
+            fn_kwargs={"config": config, "llm": llm, "prm": prm},
             desc="Running search",
             load_from_cache_file=False,
         )
