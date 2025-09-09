@@ -162,6 +162,12 @@ torchrun \\
     --loss_type={config['loss_type']} \\
     --topk_k={config['topk_k']} \\
     --topk_temperature={config['topk_temperature']} \\
+    --use_swa={str(config.get('use_swa', False)).lower()} \\
+    --swa_start_epoch={config['swa_start_epoch']} \\
+    --swa_lr={config['swa_lr']} \\
+    --swa_freq={config['swa_freq']} \\
+    --swa_schedule_type={config['swa_schedule_type']} \\
+    --swa_cycle_length={config.get('swa_cycle_length', 1)} \\
     --warmup_ratio=0.05 \\
     --report_to="wandb" \\
     --fsdp="full_shard auto_wrap" \\
@@ -225,6 +231,30 @@ echo "Experiment metadata saved to ckpts/{self.experiment_id}/experiment_metadat
         # Create model card with substituted variables
         model_card = self.substitute_variables(config['model_card_template'], context)
         
+        # Check if SWA was used and modify model card accordingly
+        swa_checkpoint_path = f"ckpts/{self.experiment_id}/swa_checkpoints/swa_averaged_weights.pt"
+        if os.path.exists(swa_checkpoint_path):
+            # Add SWA information to model card
+            swa_section = """
+
+## Stochastic Weight Averaging (SWA)
+
+This model was trained with Stochastic Weight Averaging (SWA) for improved generalization.
+The uploaded weights are the averaged weights from multiple checkpoints collected during training.
+
+**SWA Benefits:**
+- Better generalization performance
+- More robust model weights
+- Improved stability
+
+**Note:** The model weights have been automatically averaged using SWA before upload.
+"""
+            # Insert SWA section before the Usage section
+            if "## Usage" in model_card:
+                model_card = model_card.replace("## Usage", swa_section + "\n## Usage")
+            else:
+                model_card += swa_section
+        
         script_content = f"""#!/bin/bash
 #SBATCH --job-name=upload_{self.experiment_id}
 #SBATCH --nodes=1
@@ -255,6 +285,8 @@ MODELCARD
 # Upload model to HuggingFace Hub
 python -c "
 import os
+import sys
+import torch
 from huggingface_hub import HfApi, create_repo
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -268,10 +300,70 @@ try:
 except Exception as e:
     print(f'Repository creation warning: {{e}}')
 
-# Load and upload model
+# Check if SWA weights are available
+swa_checkpoint_path = 'ckpts/{self.experiment_id}/swa_checkpoints/swa_averaged_weights.pt'
+swa_info_path = 'ckpts/{self.experiment_id}/swa_info.txt'
+use_swa_weights = os.path.exists(swa_checkpoint_path)
+
+print(f'SWA weights available: {{use_swa_weights}}')
+if use_swa_weights:
+    print(f'SWA checkpoint path: {{swa_checkpoint_path}}')
+
+# Load model and tokenizer
 print('Loading model and tokenizer...')
 model = AutoModelForCausalLM.from_pretrained('ckpts/{self.experiment_id}')
 tokenizer = AutoTokenizer.from_pretrained('{context['model_name']}')
+
+# Apply SWA weights if available
+if use_swa_weights:
+    print('Applying SWA averaged weights...')
+    try:
+        # Load SWA weights
+        swa_state_dict = torch.load(swa_checkpoint_path, map_location='cpu')
+        print(f'Loaded SWA weights: {{len(swa_state_dict)}} parameters')
+        
+        # Apply SWA weights to model
+        loaded_count = 0
+        skipped_count = 0
+        missing_count = 0
+        
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if name in swa_state_dict:
+                    swa_param = swa_state_dict[name]
+                    
+                    # Check shapes match
+                    if param.shape != swa_param.shape:
+                        print(f'Shape mismatch for {{name}}: model={{param.shape}}, swa={{swa_param.shape}}')
+                        skipped_count += 1
+                        continue
+                    
+                    try:
+                        param.data.copy_(swa_param.to(param.device))
+                        loaded_count += 1
+                    except Exception as e:
+                        print(f'Failed to load parameter {{name}}: {{e}}')
+                        skipped_count += 1
+                else:
+                    missing_count += 1
+        
+        print(f'SWA weight application summary:')
+        print(f'  - Loaded: {{loaded_count}} parameters')
+        print(f'  - Skipped (shape mismatch): {{skipped_count}} parameters')
+        print(f'  - Missing in SWA: {{missing_count}} parameters')
+        
+        if loaded_count == 0:
+            print('WARNING: No SWA weights were loaded! Uploading regular weights.')
+        else:
+            print('SUCCESS: SWA weights applied to model')
+            
+        del swa_state_dict  # Free memory
+        
+    except Exception as e:
+        print(f'ERROR applying SWA weights: {{e}}')
+        print('Falling back to regular model weights')
+else:
+    print('No SWA weights found, uploading regular model weights')
 
 print('Uploading model to hub...')
 model.push_to_hub('{context['hub_model_id']}')
@@ -285,7 +377,22 @@ api.upload_file(
     repo_type='model'
 )
 
+# Upload SWA info if available
+if use_swa_weights and os.path.exists(swa_info_path):
+    try:
+        api.upload_file(
+            path_or_fileobj=swa_info_path,
+            path_in_repo='swa_info.txt',
+            repo_id='{context['hub_model_id']}',
+            repo_type='model'
+        )
+        print('SWA info uploaded to hub')
+    except Exception as e:
+        print(f'Failed to upload SWA info: {{e}}')
+
 print('Model upload completed successfully!')
+if use_swa_weights:
+    print('NOTE: The uploaded model contains SWA averaged weights for improved generalization.')
 "
 
 echo "Upload completed for experiment {self.experiment_id}"
