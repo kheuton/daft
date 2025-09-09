@@ -4,6 +4,7 @@
 experiment:
   name: "qwen_1.5B_s1_experiment_no_80"
   description: "End-to-end training and evaluation pipeline for Qwen 1.5B with S1 custom loss"
+  # DENNY CHANGE
   output_base_dir: "/cluster/tufts/hugheslab/kheuto01/code/daft/orchestration/outputs"
   
 # Step 1: Training Configuration
@@ -25,11 +26,13 @@ training:
   topk_temperature: 1.0
   
   # Weights & Biases settings
+  # DENNY CHANGE
   wandb_project: "Qwen2.5-1.5B-Instruct-s1-top128"
   wandb_entity: "wandb_kheuton"
   
   # HuggingFace Hub settings
   push_to_hub: true
+  # DENNY CHANGE
   hub_model_id: "kheuton/qwen_1.5B_s1_custom_no_80"  # Where to push the trained model
   
   # SLURM settings for training
@@ -81,6 +84,7 @@ upload:
 # Step 3: Evaluation Configuration
 evaluation:
   # Model to evaluate (will be set to the trained model)
+  # DENNY CHANGE, should match line 36
   model_path: "kheuton/qwen_1.5B_s1_custom_no_80"  # This will be updated after training
   prm_path: "Qwen/Qwen2.5-Math-PRM-7B"
   
@@ -100,6 +104,7 @@ evaluation:
   
   # VLLM sampling parameters to match training behavior
   # These should match the training topk_k and other parameters for consistency
+  # DENNY CHANGE to 0.8 T
   temperature: 1.0
   top_k: 128  # Match training topk_k parameter
   top_p: 1  # Enable nucleus sampling for better diversity
@@ -110,6 +115,7 @@ evaluation:
   
   # HuggingFace Hub settings for results
   push_results_to_hub: true
+  # DENNY CHANGE
   hub_dataset_id: "kheuton/qwen_1.5B_s1_bon_completions_no_80"  # Where to push evaluation results
   
   # SLURM settings for evaluation
@@ -129,6 +135,7 @@ evaluation:
 # Step 4: Results Processing Configuration
 processing:
   # Merge evaluation chunks
+  # DENNY CHANGE should output dir above
   outputs_base_dir: "/cluster/tufts/hugheslab/kheuto01/code/daft/orchestration/outputs"
   
   # Analysis settings
@@ -149,10 +156,12 @@ slurm_global:
 # Environment Configuration
 environment:
   # Conda environments
+  # DENNY CHANGE tos oemthing you can conda activate, could do /cluster/tufts/hugheslab/kheuto01/miniconda3/envs/s1 etc
   training_env: "s1"
   evaluation_env: "sal"
   
   # Paths
+  # DENNY CHANGE
   code_base: "/cluster/tufts/hugheslab/kheuto01/code/daft"
   
 # Dependency Management
