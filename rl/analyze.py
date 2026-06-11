@@ -2,6 +2,16 @@
 """
 analyze.py — CPU analysis: paired bootstrap, McNemar, scaling plots, power analysis.
 
+When rows contain an "agg_scores" field (added by rl/score_prm.py), two
+additional per-problem metrics are computed for n in {1,2,4,8,16,32}:
+  prm_bon@n  — subset-averaged 1[argmax-score completion in subset is correct]
+  prm_wmaj@n — subset-averaged 1[PRM-score-weighted vote picks a correct class]
+               (ties: expected utility = |correct ∩ argmax-weight set| / |argmax set|;
+               same convention as rl/advantages.py _majority_utility)
+
+Both metrics use >= 200 random subsets per problem per n (exact enumeration
+for small C(G,n) where C(G,n) <= 200; otherwise Monte-Carlo with seed 0).
+
 Usage:
     python analyze.py \
         --runs baseline=path/to/completions.jsonl fine_tuned=path/to/completions.jsonl \
@@ -142,6 +152,162 @@ def compute_per_problem_metrics(rows: dict, k_values=(1, 2, 4, 8, 16, 32)) -> di
                 pp[f"maj_at_{k}"] = None
 
         results[pid] = pp
+    return results
+
+
+# ---------------------------------------------------------------------------
+# PRM subset metrics: prm_bon@n and prm_wmaj@n
+# ---------------------------------------------------------------------------
+
+_PRM_MIN_SUBSETS = 200  # minimum number of random subsets per (problem, n)
+_PRM_SEED = 0           # fixed RNG seed for reproducibility
+
+
+def _prm_subset_utility_bon(subset_indices, correct_mask, agg_scores):
+    """best-of-n utility for one subset: 1 if the argmax-score sample is correct.
+
+    Ties in score: pick any one — utility = |correct ∩ argmax set| / |argmax set|
+    (same expected-utility tie-break as rl/advantages.py).
+    """
+    scores_sub = [agg_scores[i] for i in subset_indices]
+    max_score = max(scores_sub)
+    argmax_set = [i for i, s in zip(subset_indices, scores_sub) if s == max_score]
+    correct_in_argmax = sum(1 for i in argmax_set if correct_mask[i])
+    return correct_in_argmax / len(argmax_set)
+
+
+def _prm_subset_utility_wmaj(subset_indices, correct_mask, agg_scores, class_ids):
+    """Weighted majority vote utility for one subset.
+
+    Each canonical class accumulates the sum of agg_scores of its members in
+    the subset.  The class with the highest sum wins; ties broken by expected
+    utility: |correct ∩ argmax set| / |argmax set|.
+    """
+    # Accumulate weight per class
+    class_weight: dict[int, float] = {}
+    for i in subset_indices:
+        cid = int(class_ids[i])
+        class_weight[cid] = class_weight.get(cid, 0.0) + agg_scores[i]
+
+    if not class_weight:
+        return 0.0
+
+    max_weight = max(class_weight.values())
+    argmax_classes = [cid for cid, w in class_weight.items() if w == max_weight]
+
+    # Which class ids are correct?
+    correct_set = set(
+        int(class_ids[i]) for i in range(len(correct_mask)) if correct_mask[i]
+    )
+    correct_in_argmax = [cid for cid in argmax_classes if cid in correct_set]
+    if not correct_in_argmax:
+        return 0.0
+    return len(correct_in_argmax) / len(argmax_classes)
+
+
+def compute_prm_metrics_for_row(
+    row: dict,
+    k_values=(1, 2, 4, 8, 16, 32),
+    min_subsets: int = _PRM_MIN_SUBSETS,
+    seed: int = _PRM_SEED,
+) -> dict:
+    """Compute prm_bon@n and prm_wmaj@n for a single row with agg_scores.
+
+    Parameters
+    ----------
+    row : dict with keys "agg_scores", "correct_mask", "canonicals".
+    k_values : subset sizes to evaluate.
+    min_subsets : minimum number of subsets (exact enumeration if C(G,n) <= min_subsets).
+    seed : RNG seed for Monte-Carlo subsets.
+
+    Returns
+    -------
+    dict {metric_name: value} — e.g. {"prm_bon_1": ..., "prm_wmaj_1": ...}.
+    """
+    from math import comb as math_comb
+    from itertools import combinations
+
+    agg_scores = row.get("agg_scores")
+    if not agg_scores:
+        return {}
+
+    correct_mask = list(row["correct_mask"])
+    canonicals = row["canonicals"]
+
+    # Build class_ids without importing rl.rewards (fallback in analyze.py)
+    class_ids_fn = _get_class_ids_fn()
+    class_ids = class_ids_fn(canonicals)
+
+    G = len(agg_scores)
+    assert len(correct_mask) == G
+    assert len(class_ids) == G
+
+    indices = list(range(G))
+    rng = np.random.RandomState(seed)
+    result = {}
+
+    for n in k_values:
+        if n > G:
+            result[f"prm_bon_{n}"] = None
+            result[f"prm_wmaj_{n}"] = None
+            continue
+
+        total_subsets = math_comb(G, n)
+
+        if total_subsets <= min_subsets:
+            # Exact enumeration
+            bon_utils = []
+            wmaj_utils = []
+            for subset in combinations(indices, n):
+                bon_utils.append(
+                    _prm_subset_utility_bon(list(subset), correct_mask, agg_scores)
+                )
+                wmaj_utils.append(
+                    _prm_subset_utility_wmaj(
+                        list(subset), correct_mask, agg_scores, class_ids
+                    )
+                )
+        else:
+            # Random subsets, at least min_subsets
+            n_subsets = min_subsets
+            bon_utils = []
+            wmaj_utils = []
+            for _ in range(n_subsets):
+                subset = rng.choice(G, size=n, replace=False).tolist()
+                bon_utils.append(
+                    _prm_subset_utility_bon(subset, correct_mask, agg_scores)
+                )
+                wmaj_utils.append(
+                    _prm_subset_utility_wmaj(
+                        subset, correct_mask, agg_scores, class_ids
+                    )
+                )
+
+        result[f"prm_bon_{n}"] = float(np.mean(bon_utils))
+        result[f"prm_wmaj_{n}"] = float(np.mean(wmaj_utils))
+
+    return result
+
+
+def compute_prm_per_problem_metrics(
+    rows: dict,
+    k_values=(1, 2, 4, 8, 16, 32),
+    min_subsets: int = _PRM_MIN_SUBSETS,
+    seed: int = _PRM_SEED,
+) -> dict:
+    """Compute prm_bon@n and prm_wmaj@n for all rows that have agg_scores.
+
+    Returns {problem_id: {metric_name: value}}.
+    Rows without agg_scores produce an empty dict for that problem.
+    """
+    results = {}
+    for pid, row in rows.items():
+        if "agg_scores" not in row:
+            results[pid] = {}
+        else:
+            results[pid] = compute_prm_metrics_for_row(
+                row, k_values=k_values, min_subsets=min_subsets, seed=seed
+            )
     return results
 
 
@@ -524,6 +690,48 @@ def parse_args():
     return p.parse_args()
 
 
+def _run_paired_analysis_for_metrics(
+    metric_keys,
+    baseline_pp,
+    arm_pp,
+    problem_ids,
+    diff_results_arm,
+    name,
+    baseline_name,
+    verbose=True,
+):
+    """Paired bootstrap for a list of metric_keys; updates diff_results_arm in place."""
+    for metric_key in metric_keys:
+        paired = [
+            (baseline_pp[pid].get(metric_key), arm_pp[pid].get(metric_key))
+            for pid in problem_ids
+        ]
+        valid = [(b, a) for b, a in paired if b is not None and a is not None]
+        if not valid:
+            diff_results_arm[metric_key] = None
+            if verbose:
+                print(f"  {metric_key}: skipped (no valid pairs at this n)")
+            continue
+
+        baseline_vals = np.array([b for b, _ in valid])
+        arm_vals = np.array([a for _, a in valid])
+        diffs = arm_vals - baseline_vals
+
+        boot = paired_bootstrap_ci(diffs, n_resamples=10000, seed=0)
+        diff_results_arm[metric_key] = boot
+        if verbose:
+            sign = "+" if boot["mean_diff"] > 0 else ""
+            ci_flag = " ** CI excl 0 **" if boot["ci_excludes_zero"] else ""
+            n_skipped = len(paired) - len(valid)
+            skip_note = (
+                f" ({n_skipped} problems skipped, metric absent)" if n_skipped else ""
+            )
+            print(
+                f"  {metric_key}: diff={sign}{boot['mean_diff']:.4f} "
+                f"[{boot['ci_lower']:+.4f}, {boot['ci_upper']:+.4f}]{ci_flag}{skip_note}"
+            )
+
+
 def main():
     args = parse_args()
     out_dir = Path(args.out_dir)
@@ -562,7 +770,7 @@ def main():
 
     k_values = [1, 2, 4, 8, 16, 32]
 
-    # Compute per-problem metrics for all runs
+    # Compute per-problem pass@k / maj@k metrics for all runs
     print("Computing per-problem metrics ...")
     all_pp_metrics = {}
     all_agg_metrics = {}
@@ -570,12 +778,45 @@ def main():
         pp = compute_per_problem_metrics(rows, k_values=k_values)
         all_pp_metrics[name] = pp
 
-        # Aggregate
+        # Aggregate pass@k and maj@k
         agg = {}
-        for metric_key in [f"pass_at_{k}" for k in k_values] + ["pass_at_64_raw"] + [f"maj_at_{k}" for k in k_values]:
+        for metric_key in (
+            [f"pass_at_{k}" for k in k_values]
+            + ["pass_at_64_raw"]
+            + [f"maj_at_{k}" for k in k_values]
+        ):
             vals = [v for v in (pp[pid].get(metric_key) for pid in pp) if v is not None]
             agg[f"{metric_key}_mean"] = float(np.mean(vals)) if vals else None
         all_agg_metrics[name] = agg
+
+    # Compute PRM metrics if any run has agg_scores
+    all_prm_pp_metrics = {}
+    has_prm = {}
+    for name, rows in all_rows.items():
+        n_with_scores = sum(1 for r in rows.values() if "agg_scores" in r)
+        has_prm[name] = n_with_scores > 0
+        if has_prm[name]:
+            print(
+                f"  {name}: {n_with_scores}/{len(rows)} rows have agg_scores "
+                f"— computing PRM metrics ..."
+            )
+            prm_pp = compute_prm_per_problem_metrics(rows, k_values=k_values)
+            all_prm_pp_metrics[name] = prm_pp
+            # Aggregate PRM metrics
+            for metric_key in (
+                [f"prm_bon_{k}" for k in k_values]
+                + [f"prm_wmaj_{k}" for k in k_values]
+            ):
+                vals = [
+                    v
+                    for v in (prm_pp[pid].get(metric_key) for pid in prm_pp)
+                    if v is not None
+                ]
+                all_agg_metrics[name][f"{metric_key}_mean"] = (
+                    float(np.mean(vals)) if vals else None
+                )
+        else:
+            all_prm_pp_metrics[name] = {}
 
     # Paired analysis: each non-baseline run vs baseline
     run_names = list(runs.keys())
@@ -594,38 +835,39 @@ def main():
 
         print(f"\nPaired analysis: {name} vs {args.baseline}")
 
-        for metric_key in [f"pass_at_{k}" for k in k_values] + ["pass_at_64_raw"] + [f"maj_at_{k}" for k in k_values]:
-            # Build paired arrays — skip any problem where either run has None
-            # for this metric (e.g. k==n_total for maj@k).  Coercing None to 0.0
-            # would silently fabricate all-zero diffs and bogus paired_stats.json
-            # entries for metrics that are legitimately absent at the run's n.
-            paired = [
-                (baseline_pp[pid].get(metric_key), arm_pp[pid].get(metric_key))
-                for pid in problem_ids
-            ]
-            valid = [(b, a) for b, a in paired if b is not None and a is not None]
-            if not valid:
-                diff_results[name][metric_key] = None
-                print(f"  {metric_key}: skipped (no valid pairs at this n)")
-                continue
+        # pass@k and maj@k
+        _run_paired_analysis_for_metrics(
+            metric_keys=(
+                [f"pass_at_{k}" for k in k_values]
+                + ["pass_at_64_raw"]
+                + [f"maj_at_{k}" for k in k_values]
+            ),
+            baseline_pp=baseline_pp,
+            arm_pp=arm_pp,
+            problem_ids=problem_ids,
+            diff_results_arm=diff_results[name],
+            name=name,
+            baseline_name=args.baseline,
+        )
 
-            baseline_vals = np.array([b for b, _ in valid])
-            arm_vals = np.array([a for _, a in valid])
-            diffs = arm_vals - baseline_vals
-
-            boot = paired_bootstrap_ci(diffs, n_resamples=10000, seed=0)
-            diff_results[name][metric_key] = boot
-            sign = "+" if boot["mean_diff"] > 0 else ""
-            ci_flag = " ** CI excl 0 **" if boot["ci_excludes_zero"] else ""
-            n_skipped = len(paired) - len(valid)
-            skip_note = f" ({n_skipped} problems skipped, metric absent)" if n_skipped else ""
-            print(
-                f"  {metric_key}: diff={sign}{boot['mean_diff']:.4f} "
-                f"[{boot['ci_lower']:+.4f}, {boot['ci_upper']:+.4f}]{ci_flag}{skip_note}"
+        # PRM metrics (only when both baseline and arm have agg_scores)
+        if has_prm.get(args.baseline) and has_prm.get(name):
+            print(f"  PRM metrics (prm_bon, prm_wmaj):")
+            _run_paired_analysis_for_metrics(
+                metric_keys=(
+                    [f"prm_bon_{k}" for k in k_values]
+                    + [f"prm_wmaj_{k}" for k in k_values]
+                ),
+                baseline_pp=all_prm_pp_metrics[args.baseline],
+                arm_pp=all_prm_pp_metrics[name],
+                problem_ids=problem_ids,
+                diff_results_arm=diff_results[name],
+                name=name,
+                baseline_name=args.baseline,
             )
 
         # McNemar on binary outcomes:
-        # (1) maj@k > 0.5 indicator (majority correct) for k in [1, 2, 4, 8, 16, 32]
+        # (1) maj@k > 0.5 indicator for k in k_values
         # (2) pass@64 raw (any correct)
         # Note: pass@k unbiased estimator is fractional — bootstrap is primary.
         # McNemar is applied only to binary (0/1) per-problem outcomes.
@@ -661,7 +903,8 @@ def main():
             "problem_ids": problem_ids,
             "note": (
                 "Primary machinery: paired bootstrap (10000 resamples over problems, seed 0). "
-                "McNemar applied to maj@k>0.5 indicator and pass@64 raw binary outcomes."
+                "McNemar applied to maj@k>0.5 indicator and pass@64 raw binary outcomes. "
+                "PRM metrics (prm_bon@n, prm_wmaj@n) included when agg_scores present."
             ),
         }, f, indent=2)
     print(f"\nWrote {stats_path}")
@@ -689,6 +932,26 @@ def main():
         baseline_name=args.baseline,
     )
 
+    # PRM scaling curves (only if any run has PRM data)
+    any_prm = any(has_prm.values())
+    if any_prm:
+        plot_scaling_curves(
+            run_metrics=all_agg_metrics,
+            k_values=k_values,
+            metric_prefix="prm_bon_",
+            title="prm_bon@n vs n",
+            out_path=out_dir / "prm_bon_at_n.png",
+            baseline_name=args.baseline,
+        )
+        plot_scaling_curves(
+            run_metrics=all_agg_metrics,
+            k_values=k_values,
+            metric_prefix="prm_wmaj_",
+            title="prm_wmaj@n vs n",
+            out_path=out_dir / "prm_wmaj_at_n.png",
+            baseline_name=args.baseline,
+        )
+
     # Diff plots
     if diff_results:
         plot_diff_curves(
@@ -705,6 +968,21 @@ def main():
             title="maj@n diff (arm − baseline) with 95% CI",
             out_path=out_dir / "maj_diff.png",
         )
+        if any_prm:
+            plot_diff_curves(
+                diff_results=diff_results,
+                k_values=k_values,
+                metric_prefix="prm_bon_",
+                title="prm_bon@n diff (arm − baseline) with 95% CI",
+                out_path=out_dir / "prm_bon_diff.png",
+            )
+            plot_diff_curves(
+                diff_results=diff_results,
+                k_values=k_values,
+                metric_prefix="prm_wmaj_",
+                title="prm_wmaj@n diff (arm − baseline) with 95% CI",
+                out_path=out_dir / "prm_wmaj_diff.png",
+            )
 
     # Results markdown table
     write_results_md(
