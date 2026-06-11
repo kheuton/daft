@@ -65,7 +65,10 @@ if [[ -z "${MODEL_PATH}" ]]; then
 fi
 
 MODEL_NAME=$(basename "${MODEL_PATH}")
-OUT_DIR="${BASE_OUT_DIR}/${MODEL_NAME}/T${TEMPERATURE}_n${N_SAMPLES}"
+# Dataset-scoped output dir: math500 and math_test_1500 runs previously shared
+# shard dirs and overwrote each other.
+DATA_NAME=$(basename "${DATA}" .jsonl)
+OUT_DIR="${BASE_OUT_DIR}/${MODEL_NAME}/${DATA_NAME}/T${TEMPERATURE}_n${N_SAMPLES}"
 
 if [[ "${NUM_SHARDS}" -gt 1 ]]; then
     OUT_DIR="${OUT_DIR}/shard${SHARD_INDEX}"
