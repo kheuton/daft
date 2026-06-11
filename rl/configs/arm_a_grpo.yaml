@@ -2,7 +2,7 @@
 # A_i = c_i - mean(c), unscaled, NO std division (scale_rewards=false).
 # Same engine/geometry/KL as the shaped arms -- only credit assignment differs.
 
-model: "/cluster/tufts/hugheslab/kheuto01/code/daft/checkpoints/sft_vanilla"
+model: "/cluster/tufts/hugheslab/kheuto01/code/daft/ckpts/qwen_1.5b_s1_vanilla_1g_20260611_024222"
 
 mode: "grpo"
 k: 8                 # unused for grpo; kept for config symmetry

@@ -9,7 +9,7 @@
 # hybrid_lambda controls the pass@k weight. Decided on pilot data before full
 # runs (DESIGN sec 3 A3 dead-zone mitigation).
 
-model: "/cluster/tufts/hugheslab/kheuto01/code/daft/checkpoints/sft_vanilla"
+model: "/cluster/tufts/hugheslab/kheuto01/code/daft/ckpts/qwen_1.5b_s1_vanilla_1g_20260611_024222"
 
 mode: "vote_k"
 k: 8

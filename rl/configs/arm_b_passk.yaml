@@ -3,7 +3,7 @@
 # Dead zone: at G=16,k=8 all advantages ~0 outside C in [1,7]; prompt sampling
 # is stratified toward that band using pilot C16 counts (DESIGN sec 3, sec 5).
 
-model: "/cluster/tufts/hugheslab/kheuto01/code/daft/checkpoints/sft_vanilla"
+model: "/cluster/tufts/hugheslab/kheuto01/code/daft/ckpts/qwen_1.5b_s1_vanilla_1g_20260611_024222"
 
 mode: "pass_at_k"
 k: 8
