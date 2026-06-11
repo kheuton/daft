@@ -64,7 +64,12 @@ if [[ -z "${MODEL_PATH}" ]]; then
     exit 1
 fi
 
+# Include the parent dir when the leaf is a generic checkpoint name ("final",
+# "checkpoint-*") so different models never share an output namespace.
 MODEL_NAME=$(basename "${MODEL_PATH}")
+case "${MODEL_NAME}" in
+  final|checkpoint-*) MODEL_NAME="$(basename "$(dirname "${MODEL_PATH}")")_${MODEL_NAME}" ;;
+esac
 # Dataset-scoped output dir: math500 and math_test_1500 runs previously shared
 # shard dirs and overwrote each other.
 DATA_NAME=$(basename "${DATA}" .jsonl)
