@@ -155,9 +155,20 @@ def canonical_answer(completion_text: str) -> str:
     if not extracted:
         return ""
     try:
-        return _memoized_canonical_form_safe(extracted)
+        canon = _memoized_canonical_form_safe(extracted)
     except Exception:
-        return ""
+        canon = ""
+    if canon:
+        return canon
+    # Text-style answers (e.g. '\text{east}') canonicalize to '' or get
+    # mangled by the sympy path; fall back to strip_string, then the raw
+    # extraction, so a successfully extracted answer never collapses into the
+    # unparseable '' voting bloc. Mirrors the gt fallback in grade_batch.
+    try:
+        stripped = strip_string(extracted)
+    except Exception:
+        stripped = ""
+    return stripped.strip() if stripped and stripped.strip() else extracted.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -226,10 +237,21 @@ def grade_batch(
         gt_canon = ""
 
     if not gt_canon:
-        raise ValueError(
-            f"grade_batch: gt_answer {gt_answer!r} canonicalized to an empty string. "
-            "A missing or unparseable ground-truth answer must not silently reward completions."
-        )
+        # Some legitimate ground truths (e.g. MATH-500's '\\text{east}')
+        # canonicalize to ''. Fall back to strip_string, then the raw answer —
+        # any NON-empty target keeps the original guarantee (math_equal against
+        # '' from unparseable completions stays False) without killing the run.
+        try:
+            gt_canon = strip_string(gt_answer)
+        except Exception:
+            gt_canon = ""
+        if not gt_canon or not gt_canon.strip():
+            gt_canon = gt_answer.strip()
+        if not gt_canon:
+            raise ValueError(
+                f"grade_batch: gt_answer {gt_answer!r} has no usable form. "
+                "A missing ground-truth answer must not silently reward completions."
+            )
 
     # Extract canonicals for all completions (cheap, in the main process)
     completion_canons = [canonical_answer(c) for c in completions]
