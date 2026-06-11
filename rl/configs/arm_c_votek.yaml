@@ -1,0 +1,50 @@
+# DAFT Arm C: decision-marginal vote@k credit (DESIGN sec 3 A3, k=8).
+# A_i = E_{S in i}[u(maj(S))] - E_{S not in i}[u(maj(S))], computed EXACTLY via
+# hypergeometric DP over canonical-answer count vectors (rl/advantages.py).
+# Precondition k <= G-1 (asserted). Vote grouping uses the SAME canonicalization
+# as eval; unparseable/truncated answers form a real voting bloc.
+#
+# If the pilot shows nonzero-advantage sample fraction < ~15% (gradient
+# starvation), switch mode to "vote_passk_hybrid" (A = A_vote + 0.25*A_passk);
+# hybrid_lambda controls the pass@k weight. Decided on pilot data before full
+# runs (DESIGN sec 3 A3 dead-zone mitigation).
+
+model: "/cluster/tufts/hugheslab/kheuto01/code/daft/checkpoints/sft_vanilla"
+
+mode: "vote_k"
+k: 8
+hybrid_lambda: 0.25
+
+seed: 0
+world_size: 4
+wall_time: "12:00:00"
+
+data:
+  train_jsonl: "rl/data/rl_train.jsonl"
+
+grpo:
+  num_generations: 16
+  max_completion_length: 2048
+  max_prompt_length: 1024
+  max_steps: 400
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-6
+  lr_scheduler_type: "constant_with_warmup"
+  warmup_steps: 10
+  beta: 0.001
+  temperature: 1.0
+  top_p: 1.0
+  num_iterations: 1
+  bf16: true
+  logging_steps: 1
+  save_strategy: "steps"
+  save_steps: 50
+  save_total_limit: 2
+  scale_rewards: false
+  use_vllm: true
+  vllm_mode: "colocate"
+  vllm_gpu_memory_utilization: 0.35
+  vllm_tensor_parallel_size: 1
+  report_to: ["wandb"]
+  seed: 0

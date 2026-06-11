@@ -1,0 +1,47 @@
+# DAFT GRPO smoke config: tiny model, 1 GPU, few steps. Validates the full
+# train path end-to-end on a GPU node before any multi-hour job (DESIGN sec 6).
+#
+# Geometry note (DESIGN sec; spec): 1 GPU x per_device_train_batch_size x
+# grad_accum = global completions. With G=4 and grad_accum=1 we need
+# per_device_train_batch_size=8 so global = 8 = 2 groups (>= 2*G). 4 would be a
+# single group and violates the >= 2*num_generations assertion.
+
+model: "Qwen/Qwen2.5-0.5B-Instruct"
+
+mode: "grpo"
+k: 2                 # used only by pass_at_k/vote modes; harmless for grpo
+hybrid_lambda: 0.25
+
+seed: 0
+world_size: 1        # smoke runs on 1 GPU; overridden by WORLD_SIZE env at runtime
+wall_time: "01:00:00"
+
+data:
+  train_jsonl: "rl/data/rl_train.jsonl"
+
+grpo:
+  num_generations: 4
+  max_completion_length: 256
+  max_prompt_length: 1024
+  max_steps: 3
+  per_device_train_batch_size: 8     # 8*1*1 = 8 = 2 groups of G=4 (>= 2*G)
+  gradient_accumulation_steps: 1
+  learning_rate: 1.0e-6
+  lr_scheduler_type: "constant_with_warmup"
+  warmup_steps: 1
+  beta: 0.001
+  temperature: 1.0
+  top_p: 1.0
+  num_iterations: 1
+  bf16: true
+  logging_steps: 1
+  save_strategy: "steps"
+  save_steps: 2
+  save_total_limit: 2
+  scale_rewards: false
+  use_vllm: true
+  vllm_mode: "colocate"
+  vllm_gpu_memory_utilization: 0.35
+  vllm_tensor_parallel_size: 1
+  report_to: ["wandb"]
+  seed: 0

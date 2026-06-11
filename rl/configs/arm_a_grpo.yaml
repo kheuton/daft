@@ -1,0 +1,43 @@
+# DAFT Arm A: control GRPO (DESIGN sec 3 A1).
+# A_i = c_i - mean(c), unscaled, NO std division (scale_rewards=false).
+# Same engine/geometry/KL as the shaped arms -- only credit assignment differs.
+
+model: "/cluster/tufts/hugheslab/kheuto01/code/daft/checkpoints/sft_vanilla"
+
+mode: "grpo"
+k: 8                 # unused for grpo; kept for config symmetry
+hybrid_lambda: 0.25
+
+seed: 0
+world_size: 4        # 4 GPUs; runtime WORLD_SIZE env is authoritative for geometry
+wall_time: "12:00:00"
+
+data:
+  train_jsonl: "rl/data/rl_train.jsonl"
+
+grpo:
+  num_generations: 16
+  max_completion_length: 2048
+  max_prompt_length: 1024
+  max_steps: 400
+  per_device_train_batch_size: 4     # 4 GPUs x 4 x grad_accum 4 = 64 = 4 groups
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-6
+  lr_scheduler_type: "constant_with_warmup"
+  warmup_steps: 10
+  beta: 0.001
+  temperature: 1.0
+  top_p: 1.0
+  num_iterations: 1
+  bf16: true
+  logging_steps: 1
+  save_strategy: "steps"
+  save_steps: 50
+  save_total_limit: 2
+  scale_rewards: false
+  use_vllm: true
+  vllm_mode: "colocate"
+  vllm_gpu_memory_utilization: 0.35
+  vllm_tensor_parallel_size: 1
+  report_to: ["wandb"]
+  seed: 0

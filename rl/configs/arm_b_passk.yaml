@@ -1,0 +1,49 @@
+# DAFT Arm B: coverage-aware pass@k (DESIGN sec 3 A2, k=8).
+# Unbiased LOO-difference pass@k credit (rl/advantages.py compute_advantages).
+# Dead zone: at G=16,k=8 all advantages ~0 outside C in [1,7]; prompt sampling
+# is stratified toward that band using pilot C16 counts (DESIGN sec 3, sec 5).
+
+model: "/cluster/tufts/hugheslab/kheuto01/code/daft/checkpoints/sft_vanilla"
+
+mode: "pass_at_k"
+k: 8
+hybrid_lambda: 0.25
+
+seed: 0
+world_size: 4
+wall_time: "12:00:00"
+
+# Arm-B stratified sampling toward the learnable band (DESIGN sec 5).
+# build_dataset() duplicates in-band rows by round(weight); rows with C16 in
+# [lo,hi] are upweighted. See train_grpo.build_dataset docstring.
+stratify_band: [1, 7]
+
+data:
+  train_jsonl: "rl/data/rl_train.jsonl"
+
+grpo:
+  num_generations: 16
+  max_completion_length: 2048
+  max_prompt_length: 1024
+  max_steps: 400
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-6
+  lr_scheduler_type: "constant_with_warmup"
+  warmup_steps: 10
+  beta: 0.001
+  temperature: 1.0
+  top_p: 1.0
+  num_iterations: 1
+  bf16: true
+  logging_steps: 1
+  save_strategy: "steps"
+  save_steps: 50
+  save_total_limit: 2
+  scale_rewards: false
+  use_vllm: true
+  vllm_mode: "colocate"
+  vllm_gpu_memory_utilization: 0.35
+  vllm_tensor_parallel_size: 1
+  report_to: ["wandb"]
+  seed: 0

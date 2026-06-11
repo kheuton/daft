@@ -122,7 +122,9 @@ export WANDB_ENTITY="{context['wandb_entity']}"
 node_array=$(scontrol show hostnames $SLURM_JOB_NODELIST)
 nnodes=$(echo $node_array | wc -w)
 head_node=($node_array)
-head_node_ip=$(ssh $head_node hostname --ip-address)
+# The batch script executes on the head node, so query it directly —
+# ssh to compute nodes is blocked on this cluster (empty IP broke rendezvous).
+head_node_ip=$(hostname --ip-address | awk '{{print $1}}')
 export NCCL_DEBUG=INFO
 export NCCL_TIMEOUT=3600
 
