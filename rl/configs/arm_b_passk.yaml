@@ -45,6 +45,8 @@ grpo:
   vllm_mode: "colocate"
   vllm_gpu_memory_utilization: 0.38
   gradient_checkpointing: true
+  model_init_kwargs:
+    torch_dtype: "bfloat16"   # fp32 default load = ~19GB extra on the train side
   vllm_tensor_parallel_size: 1
   report_to: ["wandb"]
   seed: 0
