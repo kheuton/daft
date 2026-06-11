@@ -127,6 +127,12 @@ head_node=($node_array)
 head_node_ip=$(hostname --ip-address | awk '{{print $1}}')
 export NCCL_DEBUG=INFO
 export NCCL_TIMEOUT=3600
+# PCIe P2P (P2P/CUMEM) hangs on the first collective on pax nodes (verified
+# on pax119 A6000s); fall back to SHM, negligible cost at this model scale.
+export NCCL_P2P_DISABLE=1
+# Bootstrap over loopback (single-node jobs; pax nodes abort connects to the
+# external IP). Remove for multinode runs.
+export NCCL_SOCKET_IFNAME=lo
 
 # Calculate gradient accumulation steps
 gpu_count=$(nvidia-smi -L | wc -l)

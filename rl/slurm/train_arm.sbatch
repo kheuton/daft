@@ -69,6 +69,15 @@ mamba activate daft_rl
 
 cd "${REPO_DIR}"
 mkdir -p logs "${OUTDIR}"
+# rl/train_grpo.py is launched by path, which puts rl/ (not the repo root) on
+# sys.path; the repo root must be importable for `import rl.*`.
+export PYTHONPATH="${REPO_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+# PCIe P2P (P2P/CUMEM) hangs on the first NCCL collective on pax nodes
+# (verified on pax119 A6000s); SHM fallback is fine at 1.5B scale.
+export NCCL_P2P_DISABLE=1
+# Bootstrap over loopback: connects to the node's external IP got ECONNABORTED
+# on pax119. Single-node jobs only — multinode must use a real interface.
+export NCCL_SOCKET_IFNAME=lo
 
 echo "========================================================"
 echo "SLURM Job:  ${SLURM_JOB_ID:-<none>}"
