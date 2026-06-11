@@ -32,7 +32,7 @@ grpo:
   learning_rate: 1.0e-6
   lr_scheduler_type: "constant_with_warmup"
   warmup_steps: 10
-  beta: 0.001
+  beta: 0.0   # ref-model-free: 48GB colocate headroom; entropy tripwire is the guard (DESIGN sec 5 beta-ablation note)
   temperature: 1.0
   top_p: 1.0
   num_iterations: 1

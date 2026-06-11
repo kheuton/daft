@@ -113,7 +113,11 @@ exact); per-arm KL/length diagnostics noted as loss-normalization-sensitive.
   (i) arm-b stratification, (ii) advantage-scale calibration, (iii) π_0
   diversity baseline, (iv) power analysis.
 - **Arms**: a/b/c above; G=16, T_train=1.0, **max_completion 2048** [R],
-  KL β=1e-3 to π_0 (+100-step β=0 ablation on one shaped arm [R]),
+  **KL β=0** for all arms (amended at launch: the in-loop ref model pushed
+  48GB colocate past OOM; β=0 is standard in RLVR practice (DAPO/Dr.GRPO),
+  identical across arms, and the entropy tripwire is the collapse guard —
+  the review already flagged that a top-k-CE-history reference would bias
+  against diversity anyway),
   num_iterations=1, lr 1e-6 const, batch geometry pinned: 4 GPUs ×
   per_device_bs 4 × grad_accum 4 = 64 completions = 4 groups/step, asserted
   divisible by G [R]. ~400 steps. Seed 0 pilots first; ≥2 seeds for the final
@@ -171,6 +175,17 @@ TRL↔vLLM integration. **[R] Pin set: `trl==0.18.x` (colocate mode landed in
   `--constraint=a100-80G`, overflow `preempt` with requeue+resume.
 - [R] **One-step timing smoke test on the target node before any multi-hour
   job**; SLURM `--time` set from measured step time × steps × 1.5.
+
+### Note: historical eval used a Llama-3 chat template on Qwen models
+`sal.Config.custom_chat_template` defaults to a Llama-3 template and
+`best_of_n.py` applies it unconditionally — every prior eval templated Qwen
+prompts with `<|start_header_id|>` headers the Qwen tokenizer treats as plain
+text. Generation still worked (stop ids were Qwen's), but prompts were
+off-distribution vs the `<|im_start|>` format used in SFT; treat historical
+absolute numbers with suspicion. All new generation (training, filter sweep,
+quick eval) uses the Qwen chat template with the same system prompt; PRM
+metrics are computed by scoring quick-eval completions offline instead of
+re-generating through sal.
 
 ## 7. Module layout
 
