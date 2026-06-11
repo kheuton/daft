@@ -43,7 +43,7 @@ grpo:
   scale_rewards: false
   use_vllm: true
   vllm_mode: "colocate"
-  vllm_gpu_memory_utilization: 0.30
+  vllm_gpu_memory_utilization: 0.45
   gradient_checkpointing: true
   vllm_tensor_parallel_size: 1
   report_to: ["wandb"]
