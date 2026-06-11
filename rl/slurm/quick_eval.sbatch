@@ -56,7 +56,8 @@ BASE_OUT_DIR="${BASE_OUT_DIR:-/cluster/tufts/hugheslab/kheuto01/code/daft/rl/eva
 # Derive model from array index
 # ============================================================
 MODEL_INDEX="${SLURM_ARRAY_TASK_ID:-0}"
-MODEL_PATH="${MODELS[$MODEL_INDEX]}"
+# MODEL_PATH env var overrides the MODELS array (single-model submissions).
+MODEL_PATH="${MODEL_PATH:-${MODELS[$MODEL_INDEX]}}"
 
 if [[ -z "${MODEL_PATH}" ]]; then
     echo "ERROR: No model at index ${MODEL_INDEX}"

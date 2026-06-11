@@ -17,7 +17,7 @@ world_size: 1        # smoke runs on 1 GPU; overridden by WORLD_SIZE env at runt
 wall_time: "01:00:00"
 
 data:
-  train_jsonl: "rl/data/rl_train.jsonl"
+  train_jsonl: "rl/data/smoke_train.jsonl"
 
 grpo:
   num_generations: 4
