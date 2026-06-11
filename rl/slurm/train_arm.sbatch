@@ -78,6 +78,8 @@ export NCCL_P2P_DISABLE=1
 # Bootstrap over loopback: connects to the node's external IP got ECONNABORTED
 # on pax119. Single-node jobs only — multinode must use a real interface.
 export NCCL_SOCKET_IFNAME=lo
+# Reduce fragmentation OOMs on 48GB cards (see arm-a OOM, job 1156149).
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "========================================================"
 echo "SLURM Job:  ${SLURM_JOB_ID:-<none>}"
