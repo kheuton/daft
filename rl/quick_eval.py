@@ -105,7 +105,7 @@ def compute_metrics(all_results: list[dict], n_samples: int) -> dict:
     """
     # Import after we know we're in the right environment
     try:
-        from rl.advantages import pass_at_n_unbiased, maj_at_k_exact
+        from rl.advantages import pass_at_n_unbiased, maj_at_k_estimate as maj_at_k_exact
     except ImportError:
         pass_at_n_unbiased = _pass_at_n_unbiased_fallback
         maj_at_k_exact = _maj_at_k_exact_fallback

@@ -43,7 +43,7 @@ import matplotlib.pyplot as plt
 
 def _get_advantages_fns():
     try:
-        from rl.advantages import pass_at_n_unbiased, maj_at_k_exact
+        from rl.advantages import pass_at_n_unbiased, maj_at_k_estimate as maj_at_k_exact
         return pass_at_n_unbiased, maj_at_k_exact
     except ImportError:
         return _pass_at_n_unbiased_fallback, _maj_at_k_exact_fallback

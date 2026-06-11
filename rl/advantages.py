@@ -115,6 +115,46 @@ def maj_at_k_exact(correct: np.ndarray, class_ids: np.ndarray, k: int) -> float:
     return _maj_at_k_exact_from_info(class_info, G, k)
 
 
+def maj_at_k_estimate(
+    correct: np.ndarray,
+    class_ids: np.ndarray,
+    k: int,
+    max_exact_classes: int = 10,
+    n_subsets: int = 500,
+    seed: int = 0,
+) -> float:
+    """E[u(maj(S))] — exact DP when the class count is small, else seeded
+    Monte-Carlo over random k-subsets.
+
+    The exact DP enumerates multivariate-hypergeometric count vectors, which is
+    intractable on eval groups (G=64 samples, tens of distinct classes — the
+    test1500 metrics phase burned hours before this dispatcher existed).
+    MC with 500 subsets gives ~0.02 std on a {0,1} utility, well under the
+    between-problem noise, and matches DESIGN sec 5 (>=200 subsets).
+    """
+    correct = np.asarray(correct, dtype=np.float64)
+    class_ids = np.asarray(class_ids, dtype=np.int64)
+    G = len(correct)
+    assert 1 <= k <= G - 1, f"maj_at_k_estimate requires 1 <= k <= G-1, got k={k}, G={G}"
+
+    n_classes = len(np.unique(class_ids))
+    if n_classes <= max_exact_classes:
+        return maj_at_k_exact(correct, class_ids, k)
+
+    rng = np.random.default_rng(seed)
+    correct_classes = set(class_ids[correct > 0.5].tolist())
+    total = 0.0
+    for _ in range(n_subsets):
+        idx = rng.choice(G, size=k, replace=False)
+        sub = class_ids[idx]
+        vals, counts = np.unique(sub, return_counts=True)
+        top = counts.max()
+        argmax = vals[counts == top]
+        n_corr_in_argmax = sum(1 for v in argmax if v in correct_classes)
+        total += n_corr_in_argmax / len(argmax)
+    return total / n_subsets
+
+
 # ---------------------------------------------------------------------------
 # Brute-force reference implementations (used only in tests)
 # ---------------------------------------------------------------------------
