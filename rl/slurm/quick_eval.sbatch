@@ -84,7 +84,11 @@ echo "Output dir:   ${OUT_DIR}"
 echo "============================================================"
 
 # Activate environment
-source /cluster/tufts/hugheslab/kheuto01/mambaforge/etc/profile.d/conda.sh
+# Fail the job on any error (a bare `echo Done` tail otherwise masks failures
+# with exit 0), and activate via bashrc — conda.sh alone leaves `mamba activate`
+# broken and python falls through to the base env.
+set -eo pipefail
+source ~/.bashrc
 mamba activate daft_rl
 
 # Create log dir if needed
