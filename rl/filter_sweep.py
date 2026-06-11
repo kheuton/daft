@@ -165,8 +165,14 @@ def run_sweep(args: argparse.Namespace) -> None:
             # Check for truncation
             finish_reasons = [o.finish_reason for o in output.outputs]
 
-            # Grade
-            results = grade_batch(completions, prob["answer"])
+            # Grade. A malformed ground truth (e.g. empty answer field) is a
+            # data bug for that row, not a reason to kill the shard — skip it;
+            # absent rows are excluded from the RL set downstream anyway.
+            try:
+                results = grade_batch(completions, prob["answer"])
+            except ValueError as e:
+                print(f"  SKIP problem {orig_idx}: {e}")
+                continue
             correct_mask = [int(r["correct"]) for r in results]
             canonicals = [r["canonical"] for r in results]
 
