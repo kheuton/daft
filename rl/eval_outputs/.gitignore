@@ -1,0 +1,4 @@
+# completions are huge (64 samples x thousands of problems); keep only analyses
+*/T1.0_n64/
+*.jsonl
+completions_all.jsonl

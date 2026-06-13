@@ -1,0 +1,99 @@
+# Vanilla-CE SFT baseline for DAFT RL experiments (no custom loss, no SWA).
+# Rationale: legacy checkpoints used top-k cross-entropy (k=128), which
+# truncates tail diversity — the quantity decision-aware RL exploits.
+# This run produces the clean pi_0 base policy. Training step only.
+
+experiment:
+  name: "qwen_1.5b_s1_vanilla"
+  description: "Vanilla CE SFT of Qwen2.5-1.5B-Instruct on s1K (DAFT base policy)"
+  output_base_dir: "/cluster/tufts/hugheslab/kheuto01/code/daft/orchestration/outputs"
+
+training:
+  model_name: "Qwen/Qwen2.5-1.5B-Instruct"
+  train_dataset_name: "s1K_tokenized"
+
+  learning_rate: 1e-5
+  epochs: 5
+  batch_size: 16
+  weight_decay: 1e-4
+
+  use_custom_loss: false
+  loss_type: "cross_entropy"
+  topk_k: 128
+  topk_temperature: 1.0
+
+  use_swa: false
+  use_cyclic_lr: false
+  num_cycles: 1
+
+  wandb_project: "daft-rl"
+  wandb_entity: "wandb_kheuton"
+
+  push_to_hub: false
+  hub_model_id: "kheuton/qwen_1.5B_s1_vanilla"
+
+  slurm:
+    job_name: "train_s1_vanilla"
+    nodes: 1
+    ntasks_per_node: 1
+    cpus_per_task: 16
+    gres: "gpu:a100:4"
+    mem: "256G"
+    time: "12:00:00"
+    partition: "gpu"
+    # NOTE: no nodelist — the cc1gpu/s1cmp names in older configs no longer
+    # exist on this cluster (GPU nodes are pax*; A100s are 80GB).
+
+upload:
+  create_model_card: false
+  model_card_template: |
+    # qwen_1.5b_s1_vanilla (not uploaded)
+
+evaluation:
+  model_path: "unused"
+  prm_path: "Qwen/Qwen2.5-Math-PRM-7B"
+  dataset_name: "eval/datasets/math500.jsonl"
+  approach: "best_of_n"
+  n: 64
+  search_batch_size: 1
+  sort_completed: true
+  filter_duplicates: true
+  dataset_start: 0
+  dataset_end: 500
+  temperature: 1.0
+  top_k: -1
+  top_p: 1
+  seed: 96
+  push_results_to_hub: false
+  hub_dataset_id: "unused"
+  slurm:
+    job_name: "eval_unused"
+    array: "1-2%2"
+    gres: "gpu:a100:4"
+    time: "16:00:00"
+    nodes: 1
+    cpus_per_task: 16
+    mem: "256G"
+    partition: "gpu"
+
+processing:
+  outputs_base_dir: "/cluster/tufts/hugheslab/kheuto01/code/daft/orchestration/outputs"
+  compute_metrics: true
+  generate_plots: true
+  save_combined_dataset: true
+  combined_dataset_name: "unused.json"
+
+slurm_global:
+  account: ""
+  qos: ""
+  email: ""
+
+environment:
+  training_env: "s1"
+  evaluation_env: "sal"
+  code_base: "/cluster/tufts/hugheslab/kheuto01/code/daft"
+
+dependencies:
+  workflow:
+    - step: "training"
+      depends_on: []

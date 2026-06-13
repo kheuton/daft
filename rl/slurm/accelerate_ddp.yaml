@@ -1,0 +1,17 @@
+# Plain multi-GPU DDP for DAFT GRPO training (DESIGN sec 6).
+# 1.5B needs no sharding; do NOT use FSDP/DeepSpeed -- NCCL/process-group
+# conflicts with colocated vLLM (DESIGN sec 6 [R]).
+compute_environment: LOCAL_MACHINE
+distributed_type: MULTI_GPU
+debug: false
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+# num_processes is overridden on the CLI (--num_processes $GPU_COUNT).
+num_processes: 4
+rdzv_backend: static
+same_network: true
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false
