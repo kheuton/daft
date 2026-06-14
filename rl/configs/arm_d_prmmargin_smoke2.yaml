@@ -1,0 +1,51 @@
+# PRM-in-loop SMOKE-2: FULL geometry (G=16, max_completion_length=2048) on ONE
+# A100-80G, 15 steps. Purposes beyond smoke-1: (a) confirm no OOM at the real 2048
+# length with 32 completions/step (conservative vs the 16/rank of the 4-GPU run),
+# (b) a STABLE mean cosine_to_control + correct_class_mass_wins trend on the real
+# training distribution (smoke-1's 2 groups were too noisy), (c) real per-step time.
+
+model: "/cluster/tufts/hugheslab/kheuto01/code/daft/ckpts/qwen_1.5b_s1_vanilla_1g_20260611_024222"
+
+mode: "prm_margin"
+k: 8
+hybrid_lambda: 0.25
+
+seed: 0
+world_size: 1
+wall_time: "01:30:00"
+
+prm:
+  path: "/cluster/tufts/hugheslab/LLMs/HF_CACHE/models--Qwen--Qwen2.5-Math-PRM-7B/snapshots/0610740060112df12585d00a1c5f4624d2f59051"
+  agg: "last"
+  exponent: 4
+
+data:
+  train_jsonl: "rl/data/rl_train.jsonl"
+
+grpo:
+  num_generations: 16
+  max_completion_length: 2048
+  max_prompt_length: 1024
+  max_steps: 15
+  per_device_train_batch_size: 2      # 2 x 1 x ga16 = 32 = 2 groups of G=16 (>= 2*G)
+  gradient_accumulation_steps: 16
+  learning_rate: 1.0e-6
+  lr_scheduler_type: "constant_with_warmup"
+  warmup_steps: 2
+  beta: 0.0
+  temperature: 1.0
+  top_p: 1.0
+  num_iterations: 1
+  bf16: true
+  logging_steps: 1
+  save_strategy: "no"
+  scale_rewards: false
+  use_vllm: true
+  vllm_mode: "colocate"
+  vllm_gpu_memory_utilization: 0.30
+  gradient_checkpointing: true
+  model_init_kwargs:
+    torch_dtype: "bfloat16"
+  vllm_tensor_parallel_size: 1
+  report_to: []
+  seed: 0

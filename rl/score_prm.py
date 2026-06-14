@@ -126,8 +126,14 @@ def score_one_completion(
             all_scores_res.append(non_zero_elements_list)
         return all_scores_res
 
-    # Step-split: collapse consecutive newlines, then split on double-newline
-    comp = re.sub(r'\n+', '\n', completion)
+    # Step-split on the "\n\n" paragraph breaks the model uses between steps.
+    # NOTE: the previous version did re.sub(r'\n+', '\n', completion) FIRST, which
+    # collapses every "\n\n" into "\n" and makes split("\n\n") return ONE step for
+    # every completion — i.e. the PRM was scoring the whole answer as a single
+    # block, never per-step (sal gates that collapse behind outputs_is_single_step;
+    # this port hardcoded it). We normalise runs of 3+ newlines to a single
+    # paragraph break (drops empty steps) but PRESERVE the "\n\n" step separators.
+    comp = re.sub(r'\n{3,}', '\n\n', completion).strip()
     steps_list = comp.split("\n\n")
 
     messages = [
@@ -180,13 +186,15 @@ def score_row(
     question = row["problem"]
     completions = row["completions"]
     agg_scores = []
+    step_scores_all = []
     for i in range(0, len(completions), batch_size):
         chunk = completions[i : i + batch_size]
         for comp in chunk:
             step_scores = score_one_completion(question, comp, model, tokenizer)
+            step_scores_all.append(step_scores)
             agg = aggregate_scores(step_scores, agg_strategy="last")
             agg_scores.append(agg)
-    return agg_scores
+    return agg_scores, step_scores_all
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +237,12 @@ def parse_args():
         type=int,
         default=1,
         help="Total number of shards",
+    )
+    p.add_argument(
+        "--save_step_scores",
+        action="store_true",
+        help="Also write per-completion per-step PRM scores (for offline "
+             "aggregation-strategy sweeps: last/min/prod/mean).",
     )
     return p.parse_args()
 
@@ -274,7 +288,9 @@ def main():
                 f"n_completions={n_comps}"
             )
 
-            agg_scores = score_row(row, model, tokenizer, batch_size=args.batch_size)
+            agg_scores, step_scores_all = score_row(
+                row, model, tokenizer, batch_size=args.batch_size
+            )
 
             assert len(agg_scores) == len(row["completions"]), (
                 f"agg_scores length mismatch: {len(agg_scores)} vs "
@@ -283,6 +299,8 @@ def main():
 
             out_row = dict(row)
             out_row["agg_scores"] = agg_scores
+            if args.save_step_scores:
+                out_row["step_scores"] = step_scores_all
             fout.write(json.dumps(out_row) + "\n")
 
     print(f"Wrote {len(rows)} scored rows to {out_path}")

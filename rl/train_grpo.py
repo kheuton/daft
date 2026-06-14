@@ -73,8 +73,15 @@ REQUIRED_TRL_VERSION = "0.18.2"
 # this MUST be re-reviewed -- the override copies that method body verbatim.
 UPSTREAM_GASC_SHA256 = "db1c46e6e219e4089b7e3e28ed3b907d4475479f93992797a21b40a023b1f7b3"
 
-ALLOWED_MODES = {"grpo", "pass_at_k", "vote_k", "vote_passk_hybrid"}
+ALLOWED_MODES = {"grpo", "pass_at_k", "vote_k", "vote_passk_hybrid",
+                 "prm_margin", "prm_weighted", "prm_weighted_pm"}
 VOTE_MODES = {"vote_k", "vote_passk_hybrid"}
+# Phase-2 verifier-aware arms: require an in-loop PRM and a [prm] config block.
+PRM_MODES = {"prm_margin", "prm_weighted", "prm_weighted_pm"}
+# The scale_constants.json prm_* values were calibrated at this exponent
+# (rl/analysis/calibrate_prm.py). w = clip(score,0)^p depends strongly on p, so the
+# config exponent MUST match the calibration or cross-arm magnitude parity breaks.
+PRM_CALIBRATED_EXPONENT = 4.0
 
 SCALE_CONSTANTS_PATH = os.path.join(os.path.dirname(__file__), "configs", "scale_constants.json")
 
@@ -83,7 +90,8 @@ SCALE_CONSTANTS_PATH = os.path.join(os.path.dirname(__file__), "configs", "scale
 # Pure advantage replacement (factored out for unit testing -- no torch dist)
 # --------------------------------------------------------------------------- #
 
-def daft_group_advantages(correct, canonicals, mode, k, scale, hybrid_lambda=0.25):
+def daft_group_advantages(correct, canonicals, mode, k, scale, hybrid_lambda=0.25,
+                          verifier_scores=None, prm_exponent=2.0):
     """Pure function: map (B,G) correctness + canonical strings -> (B*G,) advantages.
 
     This is the exact logic the override applies after gather. Factored out so it
@@ -99,6 +107,10 @@ def daft_group_advantages(correct, canonicals, mode, k, scale, hybrid_lambda=0.2
         scale:      static per-arm scale constant (advantages are divided by it).
         hybrid_lambda: weight on pass@k term for vote_passk_hybrid (passed
                     through to rl.advantages.compute_advantages).
+        verifier_scores: (B, G) per-completion aggregated PRM score in [0,1], or
+                    None. Required for the prm_* modes (the deployed weighted-vote
+                    weight is w = clip(score,0)^prm_exponent).
+        prm_exponent: p for the prm_* modes' weight w = clip(score,0)^p.
 
     Returns:
         torch.FloatTensor of shape (B*G,), row-major (group 0 then group 1 ...),
@@ -115,8 +127,23 @@ def daft_group_advantages(correct, canonicals, mode, k, scale, hybrid_lambda=0.2
         assert len(group_canon) == G, f"group {b} has {len(group_canon)} canonicals, expected {G}"
         class_ids[b] = rewards.class_ids_from_canonicals(group_canon)
 
+    vs = None
+    empty_mask = None
+    if verifier_scores is not None:
+        vs = np.asarray(verifier_scores, dtype=np.float64)
+        assert vs.shape == correct.shape, (
+            f"verifier_scores shape {vs.shape} != correct shape {correct.shape}"
+        )
+        # drop-empty parity: mark unparseable-canonical completions (deployed rule
+        # drops them from the weighted vote).
+        empty_mask = np.array(
+            [[(str(canonicals[b][g]) == "") for g in range(G)] for b in range(B)],
+            dtype=bool,
+        )
+
     adv = advantages_mod.compute_advantages(
-        correct, class_ids, mode=mode, k=k, hybrid_lambda=hybrid_lambda
+        correct, class_ids, mode=mode, k=k, hybrid_lambda=hybrid_lambda,
+        verifier_scores=vs, prm_exponent=prm_exponent, empty_mask=empty_mask,
     )  # (B,G) float64, NO normalization inside
     adv = np.asarray(adv, dtype=np.float64) / float(scale)
     return torch.tensor(adv.reshape(-1), dtype=torch.float32)
@@ -180,6 +207,39 @@ def validate_config(cfg: dict) -> None:
         )
     if mode in {"pass_at_k", "vote_passk_hybrid"} or mode in VOTE_MODES:
         assert k is not None and 1 <= k, f"k must be >= 1 for mode {mode}; got {k}."
+
+    if mode in PRM_MODES:
+        prm = cfg.get("prm", {})
+        assert prm.get("path"), (
+            f"mode {mode!r} (verifier-aware) requires a [prm] block with 'path' "
+            "(the PRM model dir/id) in the config."
+        )
+        assert prm.get("agg", "last") in {"last", "min", "prod"}, (
+            f"prm.agg must be one of last/min/prod (score_prm.aggregate_scores); "
+            f"got {prm.get('agg')!r}."
+        )
+        assert "exponent" in prm, (
+            f"verifier mode {mode!r} requires prm.exponent EXPLICITLY (the scale "
+            f"constant was calibrated at p={PRM_CALIBRATED_EXPONENT}); no silent default."
+        )
+        assert float(prm["exponent"]) == PRM_CALIBRATED_EXPONENT, (
+            f"prm.exponent={prm['exponent']} != calibration p={PRM_CALIBRATED_EXPONENT}; "
+            "the scale_constants.json prm value would be miscalibrated. Recalibrate "
+            "(rl/analysis/calibrate_prm.py) if you really want a different exponent."
+        )
+        # scale constant MUST be explicit for a production verifier arm (no silent
+        # 1.0 fallback, which would reproduce the Round-1 magnitude confound).
+        assert os.path.exists(SCALE_CONSTANTS_PATH), (
+            f"scale_constants.json missing; verifier arm {mode!r} needs a calibrated "
+            "scale (run rl/calibrate_scale.py). Refusing to fall back to 1.0."
+        )
+        with open(SCALE_CONSTANTS_PATH) as _f:
+            _consts = json.load(_f)
+        assert mode in _consts, (
+            f"scale_constants.json has no calibrated entry for verifier mode {mode!r} "
+            f"(keys: {list(_consts)}). Calibrate it (rl/calibrate_scale.py) before "
+            "training -- a silent 1.0 scale would under/over-power the arm."
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -291,13 +351,20 @@ class DAFTGRPOTrainer(GRPOTrainer):
 
     def __init__(self, *args, daft_mode: str, daft_k: int, daft_scale: float,
                  daft_hybrid_lambda: float = 0.25, entropy_cb: EntropyTripwireCallback | None = None,
-                 trunc_frac_warn: float = 0.30, **kwargs):
+                 trunc_frac_warn: float = 0.30,
+                 daft_prm_path: str | None = None, daft_prm_agg: str = "last",
+                 daft_prm_exponent: float = 2.0, **kwargs):
         self.daft_mode = daft_mode
         self.daft_k = daft_k
         self.daft_scale = daft_scale
         self.daft_hybrid_lambda = daft_hybrid_lambda
         self.entropy_cb = entropy_cb
         self.trunc_frac_warn = trunc_frac_warn
+        self.daft_prm_path = daft_prm_path
+        self.daft_prm_agg = daft_prm_agg
+        self.daft_prm_exponent = float(daft_prm_exponent)
+        self.prm_model = None
+        self.prm_tokenizer = None
         super().__init__(*args, **kwargs)
         # Runtime guards that need the constructed args
         assert self.args.scale_rewards is False, "scale_rewards must be False"
@@ -305,6 +372,65 @@ class DAFTGRPOTrainer(GRPOTrainer):
         assert self.daft_mode in ALLOWED_MODES, f"bad mode {self.daft_mode}"
         if self.daft_mode in VOTE_MODES:
             assert self.daft_k <= self.num_generations - 1, "vote modes need k <= G-1"
+        # Phase-2 verifier-aware arms: load the in-loop PRM ON THIS RANK'S DEVICE,
+        # AFTER super().__init__() so vLLM colocate has already reserved its
+        # gpu_memory_utilization fraction (we take the remainder). beta=0 means no
+        # ref model competes for that memory.
+        if self.daft_mode in PRM_MODES:
+            assert self.daft_prm_path, f"mode {self.daft_mode} requires daft_prm_path"
+            self._load_prm()
+
+    # -- in-loop PRM (verifier-aware arms only) ------------------------------ #
+    def _load_prm(self):
+        """Load the Qwen PRM in bf16, pinned to this rank's device (NOT
+        device_map='auto', which would shard/collide with vLLM+DDP)."""
+        from transformers import AutoModel, AutoTokenizer
+        dev = self.accelerator.device
+        rank = self.accelerator.process_index
+        print(f"[DAFT][rank{rank}] loading in-loop PRM {self.daft_prm_path} -> {dev} "
+              f"(agg={self.daft_prm_agg}, p={self.daft_prm_exponent})", flush=True)
+        self.prm_tokenizer = AutoTokenizer.from_pretrained(
+            self.daft_prm_path, trust_remote_code=True
+        )
+        self.prm_model = AutoModel.from_pretrained(
+            self.daft_prm_path, torch_dtype=torch.bfloat16, trust_remote_code=True
+        ).to(dev).eval()
+        for p in self.prm_model.parameters():
+            p.requires_grad_(False)
+        got = next(self.prm_model.parameters()).device
+        assert got.type == "cuda", f"PRM not on cuda (got {got})"
+        print(f"[DAFT][rank{rank}] PRM ready on {got}", flush=True)
+
+    def _score_prm(self, question: str, completion_text: str) -> float:
+        """Aggregated PRM score for one (question, completion). Reuses
+        rl.score_prm.score_one_completion VERBATIM (has the per-step split fix) so
+        in-loop scoring is IDENTICAL to the deployed offline eval.
+
+        GUARDED: a single-rank PRM failure (OOM on a pathological completion, a
+        transient CUDA error) must NOT raise -- otherwise that rank exits before the
+        gather_object collective sequence and the other ranks deadlock until the
+        NCCL watchdog timeout, burning the run. Fall back to 0.0 (the same worst-case
+        value aggregate_scores([]) returns: the completion loses its vote weight).
+        """
+        from rl.score_prm import score_one_completion, aggregate_scores
+        try:
+            step_scores = score_one_completion(
+                question, completion_text, self.prm_model, self.prm_tokenizer
+            )
+            return float(aggregate_scores(step_scores, agg_strategy=self.daft_prm_agg))
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            warnings.warn(
+                f"PRM OOM on one completion (rank {self.accelerator.process_index}); "
+                "scoring 0.0 to keep the DDP collective in lockstep.", stacklevel=1
+            )
+            return 0.0
+        except Exception as e:  # noqa: BLE001 - never let one score kill the 4-GPU job
+            warnings.warn(
+                f"PRM scoring failed (rank {self.accelerator.process_index}): {e!r}; "
+                "scoring 0.0.", stacklevel=1
+            )
+            return 0.0
 
     # -- override: copied 0.18.2 body, advantage block replaced -------------- #
     def _generate_and_score_completions(
@@ -529,6 +655,20 @@ class DAFTGRPOTrainer(GRPOTrainer):
         n_local = len(completions_text)
         G = self.num_generations
 
+        # Raw problem text per local row (for the in-loop PRM, which applies its
+        # OWN chat template). This is the dataset user-turn, NOT the chat-templated
+        # prompts_text. Our prompts are [system, user] (last role 'user'), so the
+        # upstream conversational pop() at the assistant-bootstrap branch above does
+        # not fire and inputs[i]['prompt'][-1] is still the user turn.
+        score_prm_inloop = self.daft_mode in PRM_MODES
+        local_questions = None
+        local_prm = []
+        if score_prm_inloop:
+            local_questions = [x["prompt"][-1]["content"] for x in inputs]
+            assert all(("<|im_start|>" not in q) for q in local_questions), (
+                "in-loop PRM question carries chat markup; expected raw problem text."
+            )
+
         # Local rows are laid out as contiguous groups of G (RepeatSampler +
         # contiguous accelerate sharding -- verified in DESIGN/source notes), and
         # every completion in a group shares one ground-truth 'answer'. Grade one
@@ -549,6 +689,8 @@ class DAFTGRPOTrainer(GRPOTrainer):
                 "answers vary within a reconstructed group -- group layout broken."
             )
             graded = rewards.grade_batch(group_texts, gt)
+            # PRM question is constant within a group (same problem).
+            group_question = local_questions[gstart] if score_prm_inloop else None
             for j, g in enumerate(graded):
                 is_corr = bool(g["correct"])
                 if local_is_truncated[gstart + j]:
@@ -557,6 +699,14 @@ class DAFTGRPOTrainer(GRPOTrainer):
                     is_corr = False
                 local_correct.append(1 if is_corr else 0)
                 local_canonical.append(g["canonical"])
+                if score_prm_inloop:
+                    # Score the SAME decoded completion text in the SAME order, so
+                    # gather_object(local_prm) aligns with local_correct/canonical.
+                    local_prm.append(self._score_prm(group_question, group_texts[j]))
+            if score_prm_inloop:
+                # Bound caching-allocator fragmentation across the G sequential PRM
+                # forwards (cheap once per group; per-completion would be slow).
+                torch.cuda.empty_cache()
 
         # Prompt-identity hashes for the silent-scramble assertion.
         local_prompt_hashes = [
@@ -571,6 +721,7 @@ class DAFTGRPOTrainer(GRPOTrainer):
         all_prompt_hashes = gather_object(local_prompt_hashes)
         all_is_truncated = gather_object(local_is_truncated)
         all_completion_lengths = self.accelerator.gather(completion_lengths).tolist()
+        all_prm = gather_object(local_prm) if score_prm_inloop else None
 
         n_total = rewards_per_func.size(0)  # gathered B*G
         assert len(all_correct) == n_total, (
@@ -587,6 +738,14 @@ class DAFTGRPOTrainer(GRPOTrainer):
         hash_arr = np.asarray(all_prompt_hashes).reshape(B, G)
         trunc_arr = np.asarray([1 if t else 0 for t in all_is_truncated], dtype=np.int64).reshape(B, G)
 
+        prm_arr = None
+        if score_prm_inloop:
+            assert len(all_prm) == n_total, (
+                f"gathered PRM length {len(all_prm)} != gathered rewards {n_total}; "
+                "PRM gather order misaligned with correctness."
+            )
+            prm_arr = np.asarray(all_prm, dtype=np.float64).reshape(B, G)
+
         # Group-identity guard: every completion in a reconstructed group must
         # share the same prompt hash. A failure means TRL's contiguity
         # assumption (the .view(-1, G) that we rely on) has been broken.
@@ -602,6 +761,7 @@ class DAFTGRPOTrainer(GRPOTrainer):
         advantages_full = daft_group_advantages(
             correct_arr, canon_grouped, self.daft_mode, self.daft_k,
             self.daft_scale, hybrid_lambda=self.daft_hybrid_lambda,
+            verifier_scores=prm_arr, prm_exponent=self.daft_prm_exponent,
         ).to(device)  # (B*G,)
 
         # Slice back to local process exactly as upstream does.
@@ -633,6 +793,50 @@ class DAFTGRPOTrainer(GRPOTrainer):
             trunc_frac = float(trunc_arr.mean())
             mean_completion_len = float(np.mean(all_completion_lengths))
 
+            # PRM (verifier-aware arm) diagnostics: distinguishability from control,
+            # PRM-score health, and the DEPLOYED decision quantity. Computed from
+            # gathered arrays (identical on all ranks); logged on main only.
+            prm_metrics = {}
+            if score_prm_inloop and prm_arr is not None:
+                w = np.clip(prm_arr, 0.0, None) ** self.daft_prm_exponent
+                cmask = correct_arr > 0.5
+                if cmask.any():
+                    prm_metrics["daft/prm_mean_correct"] = float(prm_arr[cmask].mean())
+                    prm_metrics["daft/prm_std_correct"] = float(prm_arr[cmask].std())
+                    prm_metrics["daft/prm_frac_correct_hi"] = float((prm_arr[cmask] > 0.9).mean())
+                if (~cmask).any():
+                    prm_metrics["daft/prm_mean_wrong"] = float(prm_arr[~cmask].mean())
+                coss, wins, ndeg = [], 0, 0
+                for b in range(B):
+                    c = correct_arr[b].astype(np.float64)
+                    nc = int((c > 0.5).sum())
+                    if nc == 0 or nc == G:
+                        continue
+                    ndeg += 1
+                    a0 = c - c.mean()                       # implied control advantage
+                    ad = adv_np[b]
+                    n0, na = np.linalg.norm(a0), np.linalg.norm(ad)
+                    if n0 > 1e-12 and na > 1e-12:
+                        coss.append(float(np.dot(a0, ad) / (n0 * na)))
+                    # deployed decision: top correct-class PRM-mass vs top wrong-class
+                    # (drop-empty parity: exclude the unparseable-canonical class).
+                    cids = rewards.class_ids_from_canonicals(canon_grouped[b])
+                    mass, iscorr, isempty = {}, {}, {}
+                    for i in range(G):
+                        j = int(cids[i]); mass[j] = mass.get(j, 0.0) + float(w[b, i])
+                        if c[i] > 0.5:
+                            iscorr[j] = True
+                        if str(canon_grouped[b][i]) == "":
+                            isempty[j] = True
+                    cm = max((mass[j] for j in mass if iscorr.get(j, False) and not isempty.get(j, False)), default=0.0)
+                    wm = max((mass[j] for j in mass if not iscorr.get(j, False) and not isempty.get(j, False)), default=0.0)
+                    if cm > wm:
+                        wins += 1
+                if coss:
+                    prm_metrics["daft/cosine_to_control"] = float(np.mean(coss))
+                if ndeg:
+                    prm_metrics["daft/correct_class_mass_wins"] = wins / ndeg
+
             # Feed the diversity-collapse tripwire on EVERY process (identical
             # input -> identical state -> consistent stop decision).
             if self.entropy_cb is not None:
@@ -649,6 +853,7 @@ class DAFTGRPOTrainer(GRPOTrainer):
                     "daft/trunc_frac": trunc_frac,
                     "daft/mean_completion_len": mean_completion_len,
                 }
+                daft_metrics.update(prm_metrics)
                 for kname, v in daft_metrics.items():
                     self._metrics[mode][kname].append(v)
 
@@ -835,6 +1040,7 @@ def main():
     k = cfg.get("k", 0)
     hybrid_lambda = cfg.get("hybrid_lambda", 0.25)
     scale = load_scale_constant(mode)
+    prm_cfg = cfg.get("prm", {}) or {}
 
     output_dir = (
         args.output_dir
@@ -860,6 +1066,9 @@ def main():
         daft_hybrid_lambda=hybrid_lambda,
         entropy_cb=entropy_cb,
         trunc_frac_warn=cfg.get("trunc_frac_warn", 0.30),
+        daft_prm_path=prm_cfg.get("path"),
+        daft_prm_agg=prm_cfg.get("agg", "last"),
+        daft_prm_exponent=float(prm_cfg.get("exponent", PRM_CALIBRATED_EXPONENT)),
         callbacks=[entropy_cb],
     )
 

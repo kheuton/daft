@@ -1,0 +1,59 @@
+# DAFT Arm D: verifier-aware PRM class-mass-margin GRPO (Phase 2).
+#
+# Decision-aware credit for the DEPLOYED rule PRM-weighted-vote(agg=last, p=4,
+# drop-empty) — the control-safe best rule on the FIXED per-step PRM (band 0.270,
+# control 0.997, pool +0.071; analyze_agg / verify_designs). Per group, weight
+# w_i = clip(prm_last_i,0)^4; credit +w to the TOP-MASS CORRECT class and -w to
+# the TOP-MASS WRONG class (0 else), mean-subtracted. Utility tied to GROUND-TRUTH
+# correctness (hack-resistant). Distinct from grpo control (cosine 0.72, verified)
+# AND pressures the confidently-wrong plurality (the diagnosed bottleneck), which a
+# per-sample PRM reward cannot. Geometry identical to arm_a for a clean A/B.
+
+model: "/cluster/tufts/hugheslab/kheuto01/code/daft/ckpts/qwen_1.5b_s1_vanilla_1g_20260611_024222"
+
+mode: "prm_margin"
+k: 8                 # unused for prm modes; kept for config symmetry
+hybrid_lambda: 0.25
+
+seed: 0
+world_size: 4
+wall_time: "12:00:00"
+
+# In-loop verifier (7B PRM). Direct snapshot path -> no hub resolution at runtime.
+prm:
+  path: "/cluster/tufts/hugheslab/LLMs/HF_CACHE/models--Qwen--Qwen2.5-Math-PRM-7B/snapshots/0610740060112df12585d00a1c5f4624d2f59051"
+  agg: "last"        # matches the best deployed rule (analyze_agg: last is best)
+  exponent: 4        # p=4: last/p4 = pool +0.071 (best); also more distinct from control
+
+data:
+  train_jsonl: "rl/data/rl_train.jsonl"
+
+grpo:
+  num_generations: 16
+  max_completion_length: 2048
+  max_prompt_length: 1024
+  max_steps: 400                      # match arm_a exactly (cleanest A/B); smoke shows ~30-40s/step => ~3-4h << outage; save_steps=50 -> partials scoreable
+  per_device_train_batch_size: 2      # 2 x 4 GPUs x grad_accum 8 = 64 = 4 groups (arm_a parity)
+  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-6
+  lr_scheduler_type: "constant_with_warmup"
+  warmup_steps: 10
+  beta: 0.0          # ref-model-free (parity with arm_a winner; frees memory for the 7B PRM)
+  temperature: 1.0
+  top_p: 1.0
+  num_iterations: 1
+  bf16: true
+  logging_steps: 1
+  save_strategy: "steps"
+  save_steps: 50
+  save_total_limit: 3
+  scale_rewards: false
+  use_vllm: true
+  vllm_mode: "colocate"
+  vllm_gpu_memory_utilization: 0.30   # down from arm_a 0.38: leave ~18GB headroom for the resident 7B PRM
+  gradient_checkpointing: true
+  model_init_kwargs:
+    torch_dtype: "bfloat16"
+  vllm_tensor_parallel_size: 1
+  report_to: ["wandb"]
+  seed: 0

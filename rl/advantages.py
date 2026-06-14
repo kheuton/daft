@@ -23,9 +23,15 @@ import numpy as np
 def compute_advantages(
     correct: np.ndarray,
     class_ids: np.ndarray,
-    mode: Literal["grpo", "pass_at_k", "vote_k", "vote_passk_hybrid"],
+    mode: Literal[
+        "grpo", "pass_at_k", "vote_k", "vote_passk_hybrid",
+        "prm_margin", "prm_weighted", "prm_weighted_pm",
+    ],
     k: int,
     hybrid_lambda: float = 0.25,
+    verifier_scores: np.ndarray | None = None,
+    prm_exponent: float = 2.0,
+    empty_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute per-sample advantages for a batch of groups.
 
@@ -35,13 +41,36 @@ def compute_advantages(
     class_ids : (B, G) int array — equivalence-class ids of canonical answers
         within each group (e.g. from rewards.class_ids_from_canonicals).
         Unparseable answers form their own normal class.
-    mode : one of 'grpo', 'pass_at_k', 'vote_k', 'vote_passk_hybrid'.
-    k : subset size for pass@k / vote_k modes.  Ignored for 'grpo'.
+    mode : one of 'grpo', 'pass_at_k', 'vote_k', 'vote_passk_hybrid' (Round-1
+        arms) or the Phase-2 verifier-aware arms 'prm_margin', 'prm_weighted',
+        'prm_weighted_pm' (require verifier_scores).
+    k : subset size for pass@k / vote_k modes.  Ignored for 'grpo' and prm modes.
     hybrid_lambda : weight on pass@k term in vote_passk_hybrid mode.
+    verifier_scores : (B, G) float array in [0, 1] — the per-completion AGGREGATED
+        PRM score (the deployed weighted-vote keys on weight w = clip(score,0)^p).
+        Required for the prm_* modes; ignored otherwise.
+    prm_exponent : p in the deployed PRM-weighted-vote weight w_i = clip(score,0)^p.
+        Used only by the prm_* modes (DESIGN: match the deployed rule's exponent).
 
     Returns
     -------
     advantages : (B, G) float64 array.  Not normalized.
+
+    Phase-2 verifier-aware arms (decision-aware credit for the deployed
+    PRM-weighted-vote(p, drop-empty) rule; utility tied to GROUND-TRUTH
+    correctness so the PRM cannot manufacture reward for wrong answers):
+      * 'prm_margin' (D3, primary): per group let w_i = clip(score_i,0)^p and the
+        deployed class mass mass_j = sum of w over class j. Credit +w_i to members
+        of the TOP-MASS CORRECT class and -w_i to members of the TOP-MASS WRONG
+        class (0 elsewhere), then subtract the group mean. This is the dense,
+        vote-aware credit for the argmax-of-class-mass decision: it pushes the
+        top correct class above the confidently-wrong plurality. Zeroed on
+        all-correct / all-wrong groups (parity with grpo, which has no signal
+        there).
+      * 'prm_weighted' (D2): reward_i = w_i * correct_i; A_i = reward - mean.
+        Per-sample correct-side reweighting only (no wrong-side pressure).
+      * 'prm_weighted_pm' (D2pm): reward_i = w_i * (2*correct_i - 1); A = r - mean.
+        Symmetric: rewards correct by +w, penalizes wrong by -w.
     """
     correct = np.asarray(correct, dtype=np.float64)
     class_ids = np.asarray(class_ids, dtype=np.int64)
@@ -63,6 +92,20 @@ def compute_advantages(
         A_vote = _votek_advantages(correct, class_ids, k)
         A_passk = _passk_advantages(correct, k)
         return A_vote + hybrid_lambda * A_passk
+
+    if mode in ("prm_margin", "prm_weighted", "prm_weighted_pm"):
+        assert verifier_scores is not None, f"mode {mode!r} requires verifier_scores"
+        vs = np.asarray(verifier_scores, dtype=np.float64)
+        assert vs.shape == correct.shape, (
+            f"verifier_scores shape {vs.shape} != correct shape {correct.shape}"
+        )
+        w = np.clip(vs, 0.0, None) ** float(prm_exponent)  # (B,G) deployed weights
+        if mode == "prm_weighted":
+            return _prm_weighted_advantages(correct, w)
+        if mode == "prm_weighted_pm":
+            return _prm_weighted_pm_advantages(correct, w)
+        em = None if empty_mask is None else np.asarray(empty_mask, dtype=bool)
+        return _prm_margin_advantages(correct, class_ids, w, empty_mask=em)
 
     raise ValueError(f"Unknown mode: {mode!r}")
 
@@ -268,6 +311,113 @@ def _grpo_advantages(correct: np.ndarray) -> np.ndarray:
     # correct is (B, G) float64
     group_means = correct.mean(axis=1, keepdims=True)
     return correct - group_means
+
+
+# ---------------------------------------------------------------------------
+# Phase-2 verifier-aware advantages (PRM-weighted-vote decision-aware credit)
+# ---------------------------------------------------------------------------
+
+def _zero_degenerate(adv: np.ndarray, correct: np.ndarray) -> np.ndarray:
+    """Zero advantages for all-correct / all-wrong groups (grpo parity: no
+    correct-vs-wrong contest there -> no learning signal)."""
+    nc = (correct > 0.5).sum(axis=1)
+    G = correct.shape[1]
+    degen = (nc == 0) | (nc == G)
+    adv[degen] = 0.0
+    return adv
+
+
+def _prm_weighted_advantages(correct: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """D2: reward_i = w_i * correct_i ; A_i = reward - group_mean(reward).
+
+    Per-sample correct-side reweighting by the deployed PRM weight. NOTE: under
+    last-agg this is ~cosine 0.95 to grpo control (PRM|correct piles at 1.0);
+    kept for ablation. INVARIANT: reward_i == 0 whenever correct_i == 0.
+    """
+    reward = w * correct
+    adv = reward - reward.mean(axis=1, keepdims=True)
+    return _zero_degenerate(adv, correct)
+
+
+def _prm_weighted_pm_advantages(correct: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """D2pm: reward_i = w_i * (2*correct_i - 1) ; A_i = reward - group_mean.
+
+    Symmetric: rewards correct by +w, penalizes wrong by -w (adds wrong-side
+    pressure that D2 lacks). Dense.
+    """
+    reward = w * (2.0 * correct - 1.0)
+    adv = reward - reward.mean(axis=1, keepdims=True)
+    return _zero_degenerate(adv, correct)
+
+
+def _prm_margin_advantages(
+    correct: np.ndarray, class_ids: np.ndarray, w: np.ndarray,
+    empty_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """D3 (primary): dense, vote-aware credit for the PRM-weighted-vote decision.
+
+    The deployed rule selects argmax over class mass mass_j = sum_{i in j} w_i,
+    DROPPING empty/unparseable-canonical completions (drop_empty=True). For each
+    group let C* = the CORRECT class with the largest mass and W* = the WRONG class
+    with the largest mass (the two contenders whose mass ordering decides
+    correctness), considering only non-empty classes. Credit:
+        +w_i  to the genuinely-CORRECT members of C*  (raise the top correct mass)
+        -w_i  to members of W*   (lower the confidently-wrong plurality's mass)
+         0    to all other samples
+    then subtract the group mean (variance reduction; ~zero-mean like the other
+    arms -> untouched samples carry the small -mean baseline shift, not exactly 0).
+    Zeroed on all-correct / all-wrong groups (no contest).
+
+    Two faithfulness rules (code review):
+      * credit +w only to CORRECT members of C*: a class is flagged correct if ANY
+        member is correct, but a truncated/graded-wrong completion can share a
+        correct canonical (train_grpo keeps its canonical while forcing is_corr=0);
+        crediting it would reward truncation. Mass that SELECTS C*/W* still sums all
+        members (matches the deployed vote); only the per-sample CREDIT is gated.
+      * drop the empty-canonical class from C*/W* selection (empty_mask), mirroring
+        the deployed drop_empty=True so the surrogate targets the same contest.
+
+    Unlike D2 it pressures the WRONG plurality directly (the diagnosed bottleneck),
+    and unlike D1 (exact LOO decision-marginal) it is dense (credits whole classes).
+    """
+    B, G = correct.shape
+    adv = np.zeros((B, G), dtype=np.float64)
+    if empty_mask is None:
+        empty_mask = np.zeros((B, G), dtype=bool)
+    for b in range(B):
+        c = correct[b]
+        nc = int((c > 0.5).sum())
+        if nc == 0 or nc == G:
+            continue  # no correct-vs-wrong contest -> no signal (grpo parity)
+        cls = class_ids[b]
+        wb = w[b]
+        emp = empty_mask[b]
+        mass: dict[int, float] = {}
+        cls_is_correct: dict[int, bool] = {}
+        cls_is_empty: dict[int, bool] = {}
+        for i in range(G):
+            j = int(cls[i])
+            mass[j] = mass.get(j, 0.0) + float(wb[i])  # deployed mass = all members
+            if c[i] > 0.5:
+                cls_is_correct[j] = True
+            if emp[i]:
+                cls_is_empty[j] = True
+        # candidate classes exclude the dropped (empty-canonical) class.
+        correct_classes = [j for j in mass if cls_is_correct.get(j, False) and not cls_is_empty.get(j, False)]
+        wrong_classes = [j for j in mass if not cls_is_correct.get(j, False) and not cls_is_empty.get(j, False)]
+        # top-mass class on each side; deterministic tie-break: larger mass, then
+        # smaller class id.
+        Cstar = max(correct_classes, key=lambda j: (mass[j], -j)) if correct_classes else None
+        Wstar = max(wrong_classes, key=lambda j: (mass[j], -j)) if wrong_classes else None
+        base = np.zeros(G, dtype=np.float64)
+        for i in range(G):
+            j = int(cls[i])
+            if j == Cstar and c[i] > 0.5:    # credit ONLY genuinely-correct members of C*
+                base[i] = wb[i]
+            elif j == Wstar:
+                base[i] = -wb[i]
+        adv[b] = base - base.mean()
+    return adv
 
 
 def _passk_advantages(correct: np.ndarray, k: int) -> np.ndarray:

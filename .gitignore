@@ -6,3 +6,12 @@ ckpts/
 orchestration/outputs/
 orchestration/scripts/
 wandb/
+
+# Large RL artifacts — checkpoints, rollouts, scored completions (keep code, not data)
+/outputs/
+rl/eval_outputs/
+rl/analysis/outputs/band_completions.jsonl
+rl/analysis/outputs/redecode_targets.jsonl
+rl/analysis/outputs/prm_scored/
+rl/analysis/outputs/prm_scored_steps/
+rl/analysis/outputs/redecode/

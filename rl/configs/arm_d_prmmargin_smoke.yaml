@@ -1,0 +1,50 @@
+# PRM-in-loop SMOKE: real 1.5B policy + real 7B PRM on ONE A100-80G, 3 steps.
+# A 1-GPU smoke at the SAME vllm_util + same models reproduces the PER-RANK memory
+# envelope of the 4-GPU run (DDP ranks are independent), so this validates OOM +
+# per-step PRM latency + the in-loop scoring path before the full launch.
+
+model: "/cluster/tufts/hugheslab/kheuto01/code/daft/ckpts/qwen_1.5b_s1_vanilla_1g_20260611_024222"
+
+mode: "prm_margin"
+k: 8
+hybrid_lambda: 0.25
+
+seed: 0
+world_size: 1
+wall_time: "01:00:00"
+
+prm:
+  path: "/cluster/tufts/hugheslab/LLMs/HF_CACHE/models--Qwen--Qwen2.5-Math-PRM-7B/snapshots/0610740060112df12585d00a1c5f4624d2f59051"
+  agg: "last"
+  exponent: 4
+
+data:
+  train_jsonl: "rl/data/rl_train.jsonl"
+
+grpo:
+  num_generations: 8
+  max_completion_length: 1024         # long enough to exercise multi-step PRM + memory; faster than 2048
+  max_prompt_length: 1024
+  max_steps: 3
+  per_device_train_batch_size: 2      # 2 x 1 x ga8 = 16 = 2 groups of G=8 (>= 2*G)
+  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-6
+  lr_scheduler_type: "constant_with_warmup"
+  warmup_steps: 1
+  beta: 0.0
+  temperature: 1.0
+  top_p: 1.0
+  num_iterations: 1
+  bf16: true
+  logging_steps: 1
+  save_strategy: "no"
+  scale_rewards: false
+  use_vllm: true
+  vllm_mode: "colocate"
+  vllm_gpu_memory_utilization: 0.30
+  gradient_checkpointing: true
+  model_init_kwargs:
+    torch_dtype: "bfloat16"
+  vllm_tensor_parallel_size: 1
+  report_to: []
+  seed: 0
